@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HCP Fine-Tuning Example",
+  "type": "object",
+  "required": ["example_id", "task", "input", "output", "metadata"],
+  "properties": {
+    "example_id": {"type": "string"},
+    "task": {"type": "string"},
+    "input": {
+      "type": "object",
+      "description": "Human report, macro signals, previous thesis, and agent context."
+    },
+    "output": {
+      "type": "object",
+      "description": "Preferred HCP-style thesis, opportunities, hedges, evidence, risks, and review status."
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "horizon_months": {"type": "array", "items": {"type": "integer"}},
+        "requires_human_review": {"type": "boolean"},
+        "source": {"type": "string"},
+        "created_at": {"type": "string"}
+      }
+    }
+  }
+}
+

@@ -1,0 +1,91 @@
+[
+  {
+    "source": "FRED",
+    "name": "10Y Treasury Yield",
+    "value": "4.15%",
+    "as_of": "mock",
+    "direction": "mixed",
+    "interpretation": "Long rates remain restrictive but below prior stress levels, supporting duration if growth cools."
+  },
+  {
+    "source": "FRED",
+    "name": "Core PCE Inflation",
+    "value": "2.8% YoY",
+    "as_of": "mock",
+    "direction": "improving",
+    "interpretation": "Inflation is moderating but still above target, preserving policy optionality."
+  },
+  {
+    "source": "BLS",
+    "name": "Unemployment Rate",
+    "value": "4.0%",
+    "as_of": "mock",
+    "direction": "mixed",
+    "interpretation": "Labor conditions are cooling without yet confirming a recessionary break."
+  },
+  {
+    "source": "BEA",
+    "name": "Real GDP Growth",
+    "value": "1.8% annualized",
+    "as_of": "mock",
+    "direction": "mixed",
+    "interpretation": "Growth is slower but positive, consistent with a soft-landing base case."
+  },
+  {
+    "source": "Census Bureau",
+    "name": "Retail Sales",
+    "value": "0.2% MoM",
+    "as_of": "mock",
+    "direction": "neutral",
+    "interpretation": "Consumer demand is resilient but losing momentum."
+  },
+  {
+    "source": "TradingEconomics",
+    "name": "Global PMI Composite",
+    "value": "50.8",
+    "as_of": "mock",
+    "direction": "mixed",
+    "interpretation": "Global activity remains near stall speed rather than broad contraction."
+  },
+  {
+    "source": "CME FedWatch",
+    "name": "Implied Policy Path",
+    "value": "Higher odds of cuts over 12 months",
+    "as_of": "mock",
+    "direction": "improving",
+    "interpretation": "Market pricing anticipates easier policy as inflation cools."
+  },
+  {
+    "source": "World Bank Open Data",
+    "name": "Global Growth Estimate",
+    "value": "Below long-run trend",
+    "as_of": "mock",
+    "direction": "mixed",
+    "interpretation": "International demand is subdued, reducing overheating risk but capping cyclicality."
+  },
+  {
+    "source": "IMF Data",
+    "name": "Financial Conditions",
+    "value": "Moderately tight",
+    "as_of": "mock",
+    "direction": "neutral",
+    "interpretation": "Conditions are restrictive enough to slow growth but not yet crisis-like."
+  },
+  {
+    "source": "Yahoo Finance",
+    "name": "S&P 500 Earnings Revisions",
+    "value": "Slightly positive",
+    "as_of": "mock",
+    "direction": "improving",
+    "interpretation": "Equity earnings expectations are not yet signaling broad recession."
+  },
+  {
+    "source": "SEC EDGAR",
+    "name": "10-K Risk Factor Tone",
+    "value": "Elevated financing cost mentions",
+    "as_of": "mock",
+    "direction": "deteriorating",
+    "interpretation": "Corporate filings continue to flag rates, refinancing, and demand uncertainty."
+  }
+]
+

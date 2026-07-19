@@ -1,0 +1,12 @@
+HCP mock investment memo:
+
+The next 7-14 months appear likely to be defined by the collision of slowing
+growth, moderating but still-relevant inflation, and a central bank reaction
+function that is becoming more two-sided. The platform should treat the macro
+thesis as a living object, not a static memo. It should compare market pricing
+against human-written HCP views, rank opportunities across equities, fixed
+income, FX/rates, commodities, and alternatives, then force a risk and hedge
+review before any final investment committee output.
+
+This is a research and decision-support system only. It must not place trades.
+

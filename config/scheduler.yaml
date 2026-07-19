@@ -1,0 +1,31 @@
+jobs:
+  - name: daily_price_ingestion
+    cadence: daily
+    enabled: true
+    max_retries: 2
+    target: scripts.ingest_prices
+    command: python scripts/ingest_prices.py --tickers IEF,SPY,GLD,VNQ,AMLP,BTC-USD --start 2020-01-01 --end 2026-12-31
+  - name: weekly_macro_data_ingestion
+    cadence: weekly
+    enabled: true
+    max_retries: 2
+    target: app.services.market_data.MarketDataService.get_all_data
+    command: python scripts/run_hcp_analysis_from_report.py --report reports/raw/sample_macro_report.md
+  - name: weekly_research_report_generation
+    cadence: weekly
+    enabled: false
+    max_retries: 1
+    target: scripts.run_hcp_analysis_from_report
+    command: python scripts/run_hcp_analysis_from_report.py --report reports/raw/sample_macro_report.md
+  - name: horizon_based_outcome_evaluation
+    cadence: daily
+    enabled: true
+    max_retries: 2
+    target: scripts.evaluate_outcomes
+    command: python scripts/evaluate_outcomes.py
+  - name: monthly_calibration_report
+    cadence: monthly
+    enabled: true
+    max_retries: 2
+    target: scripts.generate_calibration_report
+    command: python scripts/generate_calibration_report.py
