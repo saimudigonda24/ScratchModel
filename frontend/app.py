@@ -38,6 +38,7 @@ def refresh_artifacts() -> None:
     st.session_state.debates = api_get("/history/debates")
     st.session_state.approvals = api_get("/approvals")
     st.session_state.outcomes = api_get("/outcomes")
+    st.session_state.conviction_ranking_eval = api_get("/outcomes/conviction-ranking-evaluation")
     st.session_state.proxy_mappings = api_get("/outcomes/proxy-mappings")
     st.session_state.scheduler_status = api_get("/system/scheduler")
     st.session_state.latest_calibration = api_get("/outcomes/latest-calibration-report")
@@ -480,6 +481,32 @@ with tabs[6]:
 
     st.subheader("Forecast Calibration")
     st.dataframe(pd.DataFrame(outcomes.get("forecast_outcomes", [])), use_container_width=True)
+
+    st.subheader("Conviction Ranking Evaluation")
+    ranking_eval = st.session_state.get("conviction_ranking_eval", {})
+    status = ranking_eval.get("status", "unknown")
+    rows = ranking_eval.get("rows", 0)
+    st.write({"status": status, "evaluated_rows": rows})
+    for warning in ranking_eval.get("warnings", []):
+        st.warning(warning)
+    report = ranking_eval.get("report")
+    if report:
+        metric_cols = st.columns(5)
+        metric_cols[0].metric("Rank IC", f"{report.get('mean_ic', 0):+.3f}")
+        metric_cols[1].metric("Kendall Tau", f"{report.get('mean_kendall', 0):+.3f}")
+        metric_cols[2].metric("L/S Spread", f"{report.get('mean_ls_spread', 0):+.3f}")
+        metric_cols[3].metric("Hit Rate", f"{report.get('hit_rate', 0):.0%}")
+        metric_cols[4].metric("Tie Fraction", f"{report.get('mean_tie_fraction', 0):.0%}")
+        st.json(
+            {
+                "ic_t_stat": report.get("ic_t_stat"),
+                "permutation_p": report.get("permutation_p"),
+                "bucket_returns": report.get("bucket_returns"),
+                "point_in_time_validation": "Return windows must begin no earlier than recommendation timestamp plus execution lag.",
+            }
+        )
+    else:
+        st.info("Ranking evaluation will appear after enough outcome-evaluated recommendations exist.")
 
     st.subheader("Hit Rate By Asset Class")
     hit_rows = [{"asset_class": key, "hit_rate": value} for key, value in outcomes.get("hit_rate_by_asset_class", {}).items()]

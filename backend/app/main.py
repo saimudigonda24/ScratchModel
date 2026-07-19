@@ -29,6 +29,7 @@ from app.services.investment_committee_report import list_committee_reports
 from app.services.price_ingestion import PriceIngestionService
 from app.services.calibration_report import generate_calibration_report, latest_calibration_report
 from app.services.fine_tuning_readiness import fine_tuning_readiness_report
+from app.services.eval_ranking import evaluate_outcome_rankings
 from app.services.scheduler import LightweightScheduler
 from app.services.backtesting import HistoricalBacktestService
 from app.services.institutional_memory import dashboard_lessons_summary, generate_lessons_learned
@@ -148,6 +149,11 @@ def export_approved_training_examples() -> dict:
 @app.get("/outcomes")
 def outcomes() -> dict:
     return outcome_summary()
+
+
+@app.get("/outcomes/conviction-ranking-evaluation")
+def conviction_ranking_evaluation() -> dict:
+    return evaluate_outcome_rankings()
 
 
 @app.get("/outcomes/proxy-mappings")
