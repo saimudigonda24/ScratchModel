@@ -368,56 +368,213 @@ def make_synthetic_panel(
     return pd.DataFrame(rows)
 
 
-def build_panel_from_outcomes(execution_lag: pd.Timedelta | None = None) -> pd.DataFrame:
-    """Build a point-in-time ranking panel from stored evaluated opportunity outcomes."""
+PANEL_METADATA_COLUMNS = [
+    "run_id",
+    "idea_id",
+    "horizon_months",
+    "source_outcome_id",
+    "outcome_quality_score",
+    "updated_at",
+]
+
+
+def build_panel_from_outcomes(
+    execution_lag: pd.Timedelta | None = None,
+    outcome_rows: list[dict[str, Any]] | None = None,
+    include_metadata: bool = False,
+) -> pd.DataFrame | tuple[pd.DataFrame, dict[str, Any]]:
+    """Build a canonical point-in-time ranking panel from stored outcomes.
+
+    The rank evaluator intentionally requires one row per ``(as_of, name)``.
+    Outcome storage is append-only, so repeated runs can create multiple rows
+    for the same recommendation. We canonicalize by run, idea, start date, and
+    horizon before calling the strict evaluator. Different horizons are kept as
+    separate recommendations by including the horizon in ``name``.
+    """
     lag = execution_lag if execution_lag is not None else pd.Timedelta(days=1)
-    rows = []
-    for row in list_outcome_dashboard_data().get("opportunity_outcomes", []):
+    source_rows = outcome_rows
+    if source_rows is None:
+        source_rows = list_outcome_dashboard_data().get("opportunity_outcomes", [])
+
+    candidates = []
+    skipped = 0
+    for row in source_rows:
         if not row.get("outcome_evaluated") or row.get("realized_return") is None:
+            skipped += 1
             continue
         as_of = pd.to_datetime(row.get("start_date") or row.get("created_at"))
         if pd.isna(as_of):
+            skipped += 1
             continue
         ret_start = as_of + lag
-        horizon_months = _first_horizon(row.get("target_horizon_months"))
-        ret_end = ret_start + pd.DateOffset(months=horizon_months)
-        rows.append(
-            {
-                "as_of": as_of,
-                "name": row.get("idea_id"),
-                "conviction_score": row.get("conviction_score"),
-                "ret_window_start": ret_start,
-                "ret_window_end": ret_end,
-                "fwd_return": row.get("realized_return"),
-            }
-        )
-    return pd.DataFrame(rows, columns=REQUIRED_COLUMNS)
+        run_id = str(row.get("run_id") or "unknown_run")
+        idea_id = str(row.get("idea_id") or row.get("name") or row.get("id") or "unknown_idea")
+        for horizon_months in _parse_horizons(row.get("target_horizon_months")):
+            name = _ranking_name(run_id, idea_id, horizon_months)
+            candidates.append(
+                {
+                    "as_of": as_of,
+                    "name": name,
+                    "conviction_score": row.get("conviction_score"),
+                    "ret_window_start": ret_start,
+                    "ret_window_end": ret_start + pd.DateOffset(months=horizon_months),
+                    "fwd_return": row.get("realized_return"),
+                    "run_id": run_id,
+                    "idea_id": idea_id,
+                    "horizon_months": horizon_months,
+                    "source_outcome_id": row.get("id"),
+                    "outcome_quality_score": row.get("outcome_quality_score"),
+                    "updated_at": row.get("updated_at") or row.get("created_at"),
+                    "_quality_sort": _float_or_low(row.get("outcome_quality_score")),
+                    "_updated_sort": pd.to_datetime(row.get("updated_at") or row.get("created_at"), errors="coerce"),
+                    "_id_sort": int(row.get("id") or 0),
+                }
+            )
+
+    columns = REQUIRED_COLUMNS + PANEL_METADATA_COLUMNS
+    if not candidates:
+        panel = pd.DataFrame(columns=columns)
+        metadata = {
+            "raw_rows": len(source_rows),
+            "eligible_rows": 0,
+            "canonical_rows": 0,
+            "duplicate_rows_removed": 0,
+            "skipped_rows": skipped,
+            "horizons": [],
+        }
+        return (panel, metadata) if include_metadata else panel[REQUIRED_COLUMNS]
+
+    candidates_df = pd.DataFrame(candidates)
+    eligible_rows = len(candidates_df)
+    candidates_df = candidates_df.sort_values(
+        by=["_quality_sort", "_updated_sort", "_id_sort"],
+        ascending=[False, False, False],
+        kind="mergesort",
+    )
+    canonical = candidates_df.drop_duplicates(
+        subset=["as_of", "run_id", "idea_id", "horizon_months"],
+        keep="first",
+    ).sort_values(["as_of", "name"], kind="mergesort")
+    panel = canonical[columns].reset_index(drop=True)
+    metadata = {
+        "raw_rows": len(source_rows),
+        "eligible_rows": eligible_rows,
+        "canonical_rows": len(panel),
+        "duplicate_rows_removed": eligible_rows - len(panel),
+        "skipped_rows": skipped,
+        "horizons": sorted(int(value) for value in panel["horizon_months"].dropna().unique()),
+    }
+    return (panel, metadata) if include_metadata else panel[REQUIRED_COLUMNS]
 
 
 def evaluate_outcome_rankings(
     min_rows: int = 25,
     execution_lag: pd.Timedelta | None = None,
     n_permutations: int = 300,
+    outcome_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    panel = build_panel_from_outcomes(execution_lag=execution_lag)
+    panel_with_metadata, metadata = build_panel_from_outcomes(
+        execution_lag=execution_lag,
+        outcome_rows=outcome_rows,
+        include_metadata=True,
+    )
+    panel = panel_with_metadata[REQUIRED_COLUMNS]
     warnings = []
     if len(panel) < min_rows:
         warnings.append(f"{len(panel)} evaluated rows available; need at least {min_rows} before interpreting ranking quality")
-        return {"status": "insufficient_history", "rows": len(panel), "warnings": warnings, "report": None}
+        return {
+            "status": "not_ready",
+            "reason": "insufficient_history",
+            "rows": len(panel),
+            "row_counts": metadata,
+            "warnings": warnings,
+            "report": None,
+        }
+    data_issues = _panel_data_issues(panel)
+    if data_issues:
+        return {
+            "status": "not_ready",
+            "reason": "invalid_ranking_panel",
+            "rows": len(panel),
+            "row_counts": metadata,
+            "warnings": data_issues,
+            "report": None,
+        }
     try:
         report = evaluate(panel, execution_lag=execution_lag or pd.Timedelta(days=1), n_permutations=n_permutations)
     except PointInTimeViolation as exc:
-        return {"status": "point_in_time_violation", "rows": len(panel), "warnings": [str(exc)], "report": None}
-    return {"status": "ok", "rows": len(panel), "warnings": report.warnings, "report": report.to_dict()}
+        return {
+            "status": "not_ready",
+            "reason": "point_in_time_violation",
+            "rows": len(panel),
+            "row_counts": metadata,
+            "warnings": [str(exc)],
+            "report": None,
+        }
+    except ValueError as exc:
+        return {
+            "status": "not_ready",
+            "reason": "invalid_ranking_panel",
+            "rows": len(panel),
+            "row_counts": metadata,
+            "warnings": [str(exc)],
+            "report": None,
+        }
+    return {
+        "status": "ok",
+        "reason": None,
+        "rows": len(panel),
+        "row_counts": metadata,
+        "warnings": report.warnings,
+        "report": report.to_dict(),
+    }
 
 
 def _first_horizon(raw: Any) -> int:
+    return _parse_horizons(raw)[0]
+
+
+def _parse_horizons(raw: Any) -> list[int]:
     if isinstance(raw, str):
         try:
             parsed = json.loads(raw)
         except ValueError:
-            return 1
+            return [1]
         raw = parsed
     if isinstance(raw, (list, tuple)) and raw:
-        return int(raw[0])
-    return 1
+        horizons = []
+        for value in raw:
+            try:
+                horizon = int(value)
+            except (TypeError, ValueError):
+                continue
+            if horizon > 0 and horizon not in horizons:
+                horizons.append(horizon)
+        return horizons or [1]
+    try:
+        horizon = int(raw)
+    except (TypeError, ValueError):
+        return [1]
+    return [horizon] if horizon > 0 else [1]
+
+
+def _ranking_name(run_id: str, idea_id: str, horizon_months: int) -> str:
+    return f"{run_id}::{idea_id}::{horizon_months}m"
+
+
+def _float_or_low(value: Any) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return float("-inf")
+    return result if np.isfinite(result) else float("-inf")
+
+
+def _panel_data_issues(panel: pd.DataFrame) -> list[str]:
+    issues = []
+    for column in ["conviction_score", "fwd_return"]:
+        values = pd.to_numeric(panel[column], errors="coerce")
+        invalid = values.isna() | ~np.isfinite(values)
+        if invalid.any():
+            issues.append(f"{int(invalid.sum())} row(s) have invalid {column}")
+    return issues
