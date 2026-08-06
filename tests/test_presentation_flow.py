@@ -11,6 +11,17 @@ from app.services.scenario_presentation import (
 )
 
 
+MANAGER_SCENARIO = (
+    "Over the next 12 months, inflation begins to rise again because energy prices increase and wage growth remains strong. "
+    "The U.S. economy continues to grow, but at a slower pace than before. The Federal Reserve believes inflation will be temporary "
+    "and delays raising interest rates. Financial markets remain calm at first, but investors become increasingly concerned that the Fed "
+    "is falling behind the curve. Treasury yields gradually rise, the U.S. dollar strengthens, and commodity prices continue to increase. "
+    "Equity markets remain positive early in the year but become more volatile as expectations for higher interest rates grow. "
+    "Credit spreads stay relatively contained, and unemployment remains low. Assume there is a 30% probability that the economy eventually "
+    "falls into recession if the Fed has to tighten policy aggressively later."
+)
+
+
 class FakeSnapshot:
     def model_dump(self, mode="json"):
         return {
@@ -115,6 +126,70 @@ def test_free_text_scenario_parsing_extracts_assumptions():
     assert parsed["central_bank_stance"] == "gradually tightening"
 
 
+def test_manager_scenario_parses_as_inflation_surprise_behind_curve():
+    parsed = parse_free_text_scenario(MANAGER_SCENARIO)
+
+    assert parsed["scenario_name"] == "Inflation Surprise / Fed Behind the Curve"
+    assert parsed["growth_outlook"] in {"moderate growth", "slowing growth"}
+    assert parsed["inflation_direction"] == "moderately higher"
+    assert parsed["inflation_surprise"] == "small upside surprise"
+    assert parsed["central_bank_stance"] == "gradually tightening"
+    assert parsed["fed_position"] == "behind the curve"
+    assert parsed["labor_market"] == "strong"
+    assert parsed["financial_conditions"] == "neutral"
+    assert parsed["market_volatility"] == "high"
+    assert parsed["credit_stress"] == 3
+    assert parsed["dollar_outlook"] == "moderately stronger"
+    assert parsed["commodity_shock"] == "energy shock"
+    assert parsed["equity_valuation"] == "fair"
+    assert parsed["time_horizon"] == "6-12 months"
+    assert parsed["recession_probability"] == 0.30
+    assert parsed["probability"] is None
+    assert parsed["parser_confidence"]["recession_probability"] == 1.0
+    assert not parsed["parser_warnings"]
+
+
+def test_explicit_percentage_preserved_without_invented_scenario_probability():
+    parsed = parse_free_text_scenario("Assume a 30% probability that the economy falls into recession.")
+
+    assert parsed["recession_probability"] == 0.30
+    assert parsed["probability"] is None
+    assert scenario_summary(parsed)["scenario probability"] == "not specified"
+
+
+def test_phased_volatility_language_is_high_not_crisis():
+    parsed = parse_free_text_scenario("Markets remain calm at first, then become more volatile as rates rise.")
+
+    assert parsed["market_volatility"] == "high"
+
+
+def test_slowing_but_positive_growth_is_not_recession():
+    parsed = parse_free_text_scenario("The U.S. economy continues to grow, but at a slower pace than before.")
+
+    assert parsed["growth_outlook"] == "slowing growth"
+
+
+def test_contained_credit_spreads_are_not_severe_stress():
+    parsed = parse_free_text_scenario("Credit spreads stay relatively contained.")
+
+    assert parsed["financial_conditions"] == "neutral"
+    assert parsed["credit_stress"] == 3
+
+
+def test_energy_driven_inflation_sets_energy_shock():
+    parsed = parse_free_text_scenario("Inflation begins to rise again because energy prices increase.")
+
+    assert parsed["inflation_direction"] == "moderately higher"
+    assert parsed["commodity_shock"] == "energy shock"
+
+
+def test_behind_curve_is_not_overtightening():
+    parsed = parse_free_text_scenario("The Fed believes inflation is temporary and delays raising interest rates, falling behind the curve.")
+
+    assert parsed["fed_position"] == "behind the curve"
+    assert parsed["central_bank_stance"] == "gradually tightening"
+
+
 def test_presets_expose_expected_defaults():
     presets = scenario_input_options()["presets"]
 
@@ -203,3 +278,19 @@ def test_recommendations_change_with_recession_volatility_and_fed_stance(monkeyp
     assert "Long equity volatility" in stress_hedges
     assert benign_names != stress_names
     assert stress["bear_tail_case"]["probability"] > benign["bear_tail_case"]["probability"]
+
+
+def test_manager_scenario_final_output_sections_are_non_empty(monkeypatch):
+    monkeypatch.setattr("app.services.scenario_presentation.ingest_all_sources", lambda: FakeSnapshot())
+    parsed = parse_free_text_scenario(MANAGER_SCENARIO)
+
+    outlook = generate_presentation_outlook(parsed, sequence_name="Manager Parser Regression Test")
+
+    assert outlook["cross_asset_outlook"]
+    assert outlook["top_opportunities"]
+    assert outlook["recommended_hedges"]
+    assert outlook["scenario_definition"]["risks"]
+    assert outlook["what_would_change_the_view"]["invalidating_indicators"]
+    assert outlook["historical_analogs"]
+    markdown = outlook_to_markdown(outlook)
+    assert "Not enough information to populate this section." not in markdown

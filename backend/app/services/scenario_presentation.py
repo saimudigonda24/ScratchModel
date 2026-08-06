@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -306,63 +307,167 @@ def scenario_input_options() -> dict[str, Any]:
 
 def parse_free_text_scenario(text: str) -> dict[str, Any]:
     lower = text.lower()
-    scenario = dict(SCENARIO_PRESETS["Inflation Surprise + Strong Growth"])
-    scenario["scenario_name"] = _title_from_text(text)
-    scenario["scenario_description"] = text.strip()
-    if any(term in lower for term in ["recession", "hard landing", "contraction", "downturn"]):
-        scenario.update(SCENARIO_PRESETS["Fed Overtightening / Recession"])
-        scenario["scenario_description"] = text.strip()
-    elif any(term in lower for term in ["soft landing", "goldilocks"]):
-        scenario.update(SCENARIO_PRESETS["Soft Landing"])
-        scenario["scenario_description"] = text.strip()
-    elif "stagflation" in lower:
-        scenario.update(SCENARIO_PRESETS["Stagflation"])
-        scenario["scenario_description"] = text.strip()
-    elif any(term in lower for term in ["deflation", "deflationary"]):
-        scenario.update(SCENARIO_PRESETS["Deflation Shock"])
-        scenario["scenario_description"] = text.strip()
-    elif any(term in lower for term in ["dollar squeeze", "usd squeeze", "dollar sharply higher"]):
-        scenario.update(SCENARIO_PRESETS["Dollar Squeeze"])
-        scenario["scenario_description"] = text.strip()
-    elif any(term in lower for term in ["credit stress", "spreads widen", "refinancing"]):
-        scenario.update(SCENARIO_PRESETS["Credit Stress Event"])
-        scenario["scenario_description"] = text.strip()
+    scenario = {
+        "scenario_name": "Inflation Surprise / Fed Behind the Curve" if _behind_curve(lower) and _inflation_up(lower) else _title_from_text(text),
+        "scenario_description": text.strip(),
+        "growth_outlook": "moderate growth",
+        "inflation_direction": "stable",
+        "inflation_surprise": "in line",
+        "recession_probability": 0.3,
+        "market_volatility": "normal",
+        "central_bank_stance": "neutral",
+        "fed_position": "roughly on time",
+        "labor_market": "cooling",
+        "financial_conditions": "neutral",
+        "credit_stress": 3,
+        "dollar_outlook": "stable",
+        "commodity_shock": "none",
+        "equity_valuation": "fair",
+        "time_horizon": "7-14 months",
+        "probability": None,
+        "countries_or_regions": ["U.S."],
+        "risks": [],
+        "invalidation_triggers": [],
+    }
+    confidence: dict[str, float] = {
+        "scenario_name": 0.7,
+        "growth_outlook": 0.45,
+        "inflation_direction": 0.45,
+        "inflation_surprise": 0.4,
+        "central_bank_stance": 0.45,
+        "fed_position": 0.45,
+        "labor_market": 0.4,
+        "financial_conditions": 0.35,
+        "market_volatility": 0.4,
+        "credit_stress": 0.35,
+        "dollar_outlook": 0.35,
+        "commodity_shock": 0.35,
+        "equity_valuation": 0.2,
+        "time_horizon": 0.4,
+        "recession_probability": 0.4,
+        "probability": 0.0,
+    }
 
-    if any(term in lower for term in ["growth remains strong", "strong growth", "growth accelerates"]):
-        scenario["growth_outlook"] = "strong acceleration"
-        scenario["recession_probability"] = min(float(scenario["recession_probability"]), 0.25)
-    elif any(term in lower for term in ["growth slows", "slowing growth", "slowdown"]):
+    if any(term in lower for term in ["growth continues to grow", "economy continues to grow", "continues to grow, but at a slower", "grow, but at a slower", "slower pace than before"]):
         scenario["growth_outlook"] = "slowing growth"
-        scenario["recession_probability"] = max(float(scenario["recession_probability"]), 0.45)
+        confidence["growth_outlook"] = 0.9
+    elif any(term in lower for term in ["growth remains strong", "strong growth"]):
+        scenario["growth_outlook"] = "moderate growth" if any(term in lower for term in ["slower pace", "slows", "slowing"]) else "strong acceleration"
+        confidence["growth_outlook"] = 0.75
+    elif any(term in lower for term in ["growth accelerates", "accelerating growth"]):
+        scenario["growth_outlook"] = "strong acceleration"
+        confidence["growth_outlook"] = 0.85
+    elif any(term in lower for term in ["recession", "hard landing", "contraction", "downturn"]) and not any(term in lower for term in ["probability", "risk", "if the fed", "eventually"]):
+        scenario["growth_outlook"] = "recession"
+        confidence["growth_outlook"] = 0.75
 
-    if any(term in lower for term in ["inflation surprises higher", "inflation shock", "sticky inflation"]):
-        scenario["inflation_direction"] = "sharply higher"
+    if _inflation_up(lower):
+        scenario["inflation_direction"] = "moderately higher"
+        confidence["inflation_direction"] = 0.9
+        scenario["inflation_surprise"] = "small upside surprise"
+        confidence["inflation_surprise"] = 0.8
+    if any(term in lower for term in ["inflation surprises higher", "large upside", "surprises higher"]):
         scenario["inflation_surprise"] = "large upside surprise"
-    elif any(term in lower for term in ["disinflation", "inflation cools", "inflation falls"]):
+        confidence["inflation_surprise"] = 0.9
+    elif any(term in lower for term in ["upside surprise", "surprise higher", "higher than expected"]):
+        scenario["inflation_surprise"] = "small upside surprise"
+        confidence["inflation_surprise"] = 0.85
+    if any(term in lower for term in ["disinflation", "inflation cools", "inflation falls", "inflation declines"]) and not _inflation_up(lower):
         scenario["inflation_direction"] = "disinflation"
         scenario["inflation_surprise"] = "small downside surprise"
+        confidence["inflation_direction"] = 0.85
+        confidence["inflation_surprise"] = 0.75
 
-    if any(term in lower for term in ["fed delays", "behind the curve", "delayed tightening"]):
+    if _behind_curve(lower):
         scenario["fed_position"] = "behind the curve"
         scenario["central_bank_stance"] = "gradually tightening"
-    elif any(term in lower for term in ["fed overtightening", "aggressive tightening", "tightens aggressively"]):
+        scenario["expected_policy_path"] = "The Fed treats inflation as temporary and delays tightening, raising the risk of a later catch-up."
+        confidence["fed_position"] = 0.95
+        confidence["central_bank_stance"] = 0.85
+    elif any(term in lower for term in ["fed overtightening", "overtightening", "aggressive tightening", "tightens aggressively"]):
         scenario["central_bank_stance"] = "aggressively tightening"
         scenario["fed_position"] = "ahead of the curve"
+        confidence["central_bank_stance"] = 0.85
+        confidence["fed_position"] = 0.75
     elif any(term in lower for term in ["fed cuts", "easing", "pivot"]):
         scenario["central_bank_stance"] = "gradually easing"
+        confidence["central_bank_stance"] = 0.75
 
-    if any(term in lower for term in ["volatility spike", "crisis", "panic"]):
+    if any(term in lower for term in ["unemployment remains low", "low unemployment", "labor remains strong", "wage growth remains strong"]):
+        scenario["labor_market"] = "strong"
+        confidence["labor_market"] = 0.9
+    elif any(term in lower for term in ["labor weakens", "unemployment rises", "jobless claims rise"]):
+        scenario["labor_market"] = "cooling"
+        confidence["labor_market"] = 0.7
+
+    if any(term in lower for term in ["markets remain calm at first", "calm at first", "become more volatile", "more volatile as"]):
+        scenario["market_volatility"] = "high"
+        confidence["market_volatility"] = 0.85
+    elif any(term in lower for term in ["volatility spike", "crisis", "panic"]):
         scenario["market_volatility"] = "crisis"
+        confidence["market_volatility"] = 0.85
     elif "high volatility" in lower:
         scenario["market_volatility"] = "high"
-    if any(term in lower for term in ["dollar stronger", "usd stronger", "dollar squeeze"]):
+        confidence["market_volatility"] = 0.75
+
+    if any(term in lower for term in ["credit spreads stay relatively contained", "credit spreads stay contained", "spreads stay contained", "contained credit spreads"]):
+        scenario["financial_conditions"] = "neutral"
+        scenario["credit_stress"] = 3
+        confidence["financial_conditions"] = 0.85
+        confidence["credit_stress"] = 0.9
+    elif any(term in lower for term in ["credit spreads widen", "credit stress", "refinancing stress"]):
+        scenario["financial_conditions"] = "tight"
+        scenario["credit_stress"] = 7
+        confidence["financial_conditions"] = 0.75
+        confidence["credit_stress"] = 0.8
+
+    if any(term in lower for term in ["financial markets remain calm at first", "markets remain calm at first"]):
+        scenario["financial_conditions"] = "neutral"
+        confidence["financial_conditions"] = max(confidence["financial_conditions"], 0.75)
+
+    if any(term in lower for term in ["dollar strengthens", "dollar stronger", "usd strengthens", "usd stronger"]):
+        scenario["dollar_outlook"] = "moderately stronger"
+        confidence["dollar_outlook"] = 0.9
+    elif any(term in lower for term in ["dollar sharply stronger", "usd sharply stronger", "dollar squeeze"]):
         scenario["dollar_outlook"] = "sharply stronger"
+        confidence["dollar_outlook"] = 0.85
     elif any(term in lower for term in ["dollar weaker", "usd weaker"]):
         scenario["dollar_outlook"] = "moderately weaker"
-    if "energy shock" in lower or "oil shock" in lower:
+        confidence["dollar_outlook"] = 0.75
+
+    if any(term in lower for term in ["energy prices increase", "energy prices rise", "oil prices increase", "oil prices rise", "energy shock", "oil shock"]):
         scenario["commodity_shock"] = "energy shock"
-    elif "commodity shock" in lower:
+        confidence["commodity_shock"] = 0.95
+    elif any(term in lower for term in ["commodity prices continue to increase", "commodity prices rise", "commodity pressure", "commodity shock"]):
         scenario["commodity_shock"] = "broad commodity shock"
+        confidence["commodity_shock"] = 0.8
+
+    if any(term in lower for term in ["12 months", "next 12 months", "over the next 12"]):
+        scenario["time_horizon"] = "6-12 months"
+        confidence["time_horizon"] = 0.95
+    elif any(term in lower for term in ["7-14 months", "7 to 14 months"]):
+        scenario["time_horizon"] = "7-14 months"
+        confidence["time_horizon"] = 0.95
+
+    recession_pct = _extract_percentage_near(lower, ["recession", "falls into recession", "recession if"])
+    if recession_pct is not None:
+        scenario["recession_probability"] = recession_pct
+        confidence["recession_probability"] = 1.0
+    scenario_pct = _extract_percentage_near(lower, ["scenario probability", "probability of this scenario", "case probability"])
+    if scenario_pct is not None:
+        scenario["probability"] = scenario_pct
+        confidence["probability"] = 1.0
+
+    if any(term in lower for term in ["equity markets remain positive early", "equities remain positive early"]):
+        scenario["custom_assumptions"] = "Equities positive early, then more volatile as higher-rate expectations build."
+
+    scenario["risks"] = _parsed_risks(scenario)
+    scenario["invalidation_triggers"] = _parsed_invalidation_triggers(scenario)
+    warnings = _contradiction_warnings(lower, scenario)
+    scenario["parser_confidence"] = confidence
+    scenario["low_confidence_fields"] = [field for field, score in confidence.items() if score < 0.55]
+    scenario["parser_warnings"] = warnings
+    scenario["review_required"] = bool(warnings or scenario["low_confidence_fields"])
     return scenario
 
 
@@ -378,7 +483,7 @@ def scenario_summary(scenario: dict[str, Any]) -> dict[str, Any]:
         "dollar": normalized["dollar_outlook"],
         "commodity shock": normalized["commodity_shock"],
         "time horizon": normalized["scenario_duration"],
-        "scenario probability": f"{normalized['probability']:.0%}",
+        "scenario probability": "not specified" if normalized.get("probability") is None else f"{normalized['probability']:.0%}",
         "countries": ", ".join(normalized.get("countries_or_regions", [])),
     }
 
@@ -599,6 +704,7 @@ def _normalize_scenario(scenario: dict[str, Any], demo: bool = False) -> dict[st
     labor_market = _choice(merged, "labor_market", "labor_market_conditions", default="cooling")
     financial_conditions = _choice(merged, "financial_conditions", default="neutral")
     time_horizon = _choice(merged, "time_horizon", "scenario_duration", default="7-14 months")
+    scenario_probability = _optional_probability(merged.get("probability"))
     model = MacroScenario(
         scenario_name=merged.get("scenario_name") or "Custom Macro Scenario",
         scenario_date=merged.get("scenario_date") or datetime.utcnow().date().isoformat(),
@@ -613,7 +719,7 @@ def _normalize_scenario(scenario: dict[str, Any], demo: bool = False) -> dict[st
         fiscal_conditions=merged.get("fiscal_conditions") or "neutral",
         recession_probability=_clamp_probability(merged.get("recession_probability", 0.3)),
         scenario_duration=time_horizon,
-        probability=_clamp_probability(merged.get("probability", 0.5)),
+        probability=scenario_probability if scenario_probability is not None else _case_probabilities_for_unspecified(merged),
         conviction=float(merged.get("conviction", 7.0)),
         invalidation_triggers=_as_list(merged.get("invalidation_triggers", [])),
     )
@@ -634,6 +740,11 @@ def _normalize_scenario(scenario: dict[str, Any], demo: bool = False) -> dict[st
     payload["scenario_description"] = merged.get("scenario_description", "")
     payload["countries_or_regions"] = _as_list(merged.get("countries_or_regions", ["United States"]))
     payload["risks"] = _as_list(merged.get("risks", []))
+    payload["probability"] = scenario_probability
+    payload["parser_confidence"] = merged.get("parser_confidence", {})
+    payload["low_confidence_fields"] = _as_list(merged.get("low_confidence_fields", []))
+    payload["parser_warnings"] = _as_list(merged.get("parser_warnings", []))
+    payload["review_required"] = bool(merged.get("review_required", False))
     return payload
 
 
@@ -677,7 +788,9 @@ def _scenario_specific_recommendations(scenario: dict[str, Any]) -> list[dict[st
 
 def _case_probabilities(scenario: dict[str, Any]) -> dict[str, float]:
     bear = _clamp_probability(scenario.get("recession_probability", 0.3))
-    selected_base = _clamp_probability(scenario.get("probability", 0.5))
+    selected_base = _optional_probability(scenario.get("probability"))
+    if selected_base is None:
+        selected_base = max(0.05, min(0.7, 1 - bear - 0.15))
     base = min(selected_base, max(0.05, 1 - bear))
     bull = max(0.0, 1 - base - bear)
     if bull < 0.05 and bear < 0.95:
@@ -853,6 +966,17 @@ def _clamp_probability(value: Any) -> float:
     return max(0.0, min(1.0, number))
 
 
+def _optional_probability(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    return _clamp_probability(value)
+
+
+def _case_probabilities_for_unspecified(values: dict[str, Any]) -> float:
+    bear = _clamp_probability(values.get("recession_probability", 0.3))
+    return max(0.05, min(0.7, 1 - bear - 0.15))
+
+
 def _as_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -866,6 +990,87 @@ def _as_list(value: Any) -> list[str]:
     if isinstance(value, (list, tuple, set)):
         return [str(item).strip() for item in value if str(item).strip()]
     return [str(value)]
+
+
+def _inflation_up(text: str) -> bool:
+    return any(
+        term in text
+        for term in [
+            "inflation begins to rise",
+            "inflation rises",
+            "inflation rise",
+            "inflation surprises higher",
+            "inflation surprise higher",
+            "inflation will be higher",
+            "sticky inflation",
+            "energy prices increase",
+            "energy prices rise",
+            "commodity prices continue to increase",
+        ]
+    )
+
+
+def _behind_curve(text: str) -> bool:
+    return any(
+        term in text
+        for term in [
+            "delays raising interest rates",
+            "delays tightening",
+            "fed delays",
+            "temporary and delays",
+            "falling behind the curve",
+            "behind the curve",
+            "too accommodative",
+            "too slow",
+        ]
+    )
+
+
+def _extract_percentage_near(text: str, anchors: list[str]) -> float | None:
+    matches = [(match.start(), float(match.group(1)) / 100) for match in re.finditer(r"(\d+(?:\.\d+)?)\s*%", text)]
+    if not matches:
+        return None
+    for position, value in matches:
+        window = text[max(0, position - 80): position + 120]
+        if any(anchor in window for anchor in anchors):
+            return value
+    return None
+
+
+def _parsed_risks(scenario: dict[str, Any]) -> list[str]:
+    risks = [
+        "Fed delay allows inflation expectations and Treasury yields to rise further.",
+        "Higher rates eventually undermine equity multiples and credit risk appetite.",
+    ]
+    if float(scenario.get("recession_probability", 0)) > 0:
+        risks.append("Later aggressive tightening could push the economy into recession.")
+    if scenario.get("commodity_shock") != "none":
+        risks.append("Energy or commodity pressure keeps inflation sticky for longer than expected.")
+    return risks
+
+
+def _parsed_invalidation_triggers(scenario: dict[str, Any]) -> list[str]:
+    triggers = [
+        "Energy prices reverse lower and inflation pressure fades.",
+        "Wage growth cools materially while unemployment begins to rise.",
+        "Fed communication turns preemptively hawkish before markets price a behind-the-curve risk.",
+    ]
+    if scenario.get("dollar_outlook") in {"moderately stronger", "sharply stronger"}:
+        triggers.append("The U.S. dollar weakens despite higher yields.")
+    return triggers
+
+
+def _contradiction_warnings(text: str, scenario: dict[str, Any]) -> list[str]:
+    warnings = []
+    if _inflation_up(text) and scenario.get("inflation_direction") in {"disinflation", "deflation"}:
+        warnings.append("Review required: extracted assumptions may conflict with the scenario.")
+    if "unemployment remains low" in text and scenario.get("labor_market") in {"weak", "recessionary"}:
+        warnings.append("Review required: extracted assumptions may conflict with the scenario.")
+    if "credit spreads stay" in text and scenario.get("financial_conditions") == "severely tight":
+        warnings.append("Review required: extracted assumptions may conflict with the scenario.")
+    if _behind_curve(text) and scenario.get("central_bank_stance") == "aggressively tightening":
+        warnings.append("Review required: extracted assumptions may conflict with the scenario.")
+    return list(dict.fromkeys(warnings))
 
 
 def _internal_growth(value: str) -> str:
@@ -1082,7 +1287,7 @@ def _debate_summary(scenario: dict[str, Any], opportunities: list[dict[str, Any]
 
 def _table(rows: list[dict[str, Any]], columns: list[str]) -> str:
     if not rows:
-        return "None recorded."
+        return "Not enough information to populate this section."
     header = "| " + " | ".join(columns) + " |"
     divider = "| " + " | ".join(["---"] * len(columns)) + " |"
     body = []
@@ -1096,7 +1301,7 @@ def _bullet_dict(values: dict[str, Any]) -> str:
 
 
 def _bullets(values: list[Any]) -> str:
-    return "\n".join(f"- {_compact(value)}" for value in values) if values else "None recorded."
+    return "\n".join(f"- {_compact(value)}" for value in values) if values else "Not enough information to populate this section."
 
 
 def _compact(value: Any) -> str:

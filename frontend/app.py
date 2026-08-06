@@ -283,7 +283,9 @@ def merge_builder_updates(builder: dict[str, Any]) -> dict[str, Any]:
         c1, c2, c3 = st.columns(3)
         horizon = c1.selectbox("Time horizon", options.get("time_horizon", []), index=option_index(options.get("time_horizon", []), builder.get("time_horizon")))
         recession = c2.slider("Recession probability", 0.0, 1.0, float(builder.get("recession_probability", 0.3)), 0.01)
-        probability = c3.slider("Scenario probability", 0.0, 1.0, float(builder.get("probability", 0.5)), 0.01)
+        probability_value = builder.get("probability")
+        probability = c3.slider("Scenario probability", 0.0, 1.0, float(probability_value) if probability_value is not None else 0.5, 0.01)
+        probability_specified = c3.checkbox("Scenario probability specified", value=probability_value is not None)
         c1, c2 = st.columns(2)
         countries = c1.multiselect("Countries/regions", region_options, default=selected_regions)
         custom_countries = c2.text_input("Custom regions", value=custom_regions)
@@ -311,7 +313,7 @@ def merge_builder_updates(builder: dict[str, Any]) -> dict[str, Any]:
         "equity_valuation": valuation,
         "time_horizon": horizon,
         "recession_probability": recession,
-        "probability": probability,
+        "probability": probability if probability_specified else None,
         "countries_or_regions": regions,
         "custom_assumptions": custom_assumptions,
         "risks": [item.strip() for item in risks.splitlines() if item.strip()],
@@ -388,6 +390,8 @@ with tabs[0]:
             parsed = api_post("/scenario-lab/parse", {"text": scenario_text}, {})
             if parsed.get("scenario"):
                 st.session_state.scenario_builder = parsed["scenario"]
+                st.session_state.scenario_parse_pending = True
+                st.session_state.scenario_assumptions_confirmed = False
                 st.success("Scenario parsed. Review and edit the extracted fields below.")
         st.caption("The parser is rule-based for the demo. You can edit every extracted field before analysis.")
 
@@ -399,6 +403,8 @@ with tabs[0]:
             for col, name in zip(cols, preset_names[row_start:row_start + 5]):
                 if col.button(name, key=f"preset_{name}", use_container_width=True):
                     st.session_state.scenario_builder = dict(options["presets"][name])
+                    st.session_state.scenario_parse_pending = False
+                    st.session_state.scenario_assumptions_confirmed = True
                     st.success(f"Loaded preset: {name}")
         st.caption("Presets populate the controls, but all fields remain editable.")
 
@@ -408,6 +414,29 @@ with tabs[0]:
     st.markdown("**Pre-Analysis Summary**")
     summary_rows = [{"assumption": key, "value": value} for key, value in summary.get("summary", {}).items()]
     table(summary_rows, ["assumption", "value"], "No scenario summary available yet.")
+    parser_warnings = st.session_state.scenario_builder.get("parser_warnings", [])
+    low_confidence = st.session_state.scenario_builder.get("low_confidence_fields", [])
+    confidence = st.session_state.scenario_builder.get("parser_confidence", {})
+    if parser_warnings:
+        for warning in parser_warnings:
+            st.warning(warning)
+    if low_confidence:
+        st.info("Low-confidence parsed fields: " + ", ".join(low_confidence))
+    if confidence:
+        confidence_rows = [
+            {"field": field, "confidence": f"{score:.0%}", "review": "low" if score < 0.55 else "ok"}
+            for field, score in confidence.items()
+        ]
+        table(confidence_rows, ["field", "confidence", "review"], "No parser confidence metadata available.")
+    confirm_cols = st.columns(2)
+    if confirm_cols[0].button("Use Parsed Values", use_container_width=True):
+        st.session_state.scenario_assumptions_confirmed = True
+        st.session_state.scenario_parse_pending = False
+        st.success("Parsed assumptions confirmed for analysis.")
+    if confirm_cols[1].button("Edit Before Analysis", use_container_width=True):
+        st.session_state.scenario_assumptions_confirmed = False
+        st.session_state.scenario_parse_pending = True
+        st.info("Edit the structured fields, then click Use Parsed Values before generating an outlook.")
 
     phases = (st.session_state.get("scenario_lab") or {}).get("phases", [])
     if phases:
@@ -421,6 +450,9 @@ with tabs[0]:
     if editor["save_summary"]:
         st.success("Scenario summary updated.")
     if editor["generate"]:
+        if not st.session_state.get("scenario_assumptions_confirmed", False):
+            st.warning("Review and confirm structured assumptions with Use Parsed Values before generating an HCP Outlook.")
+            st.stop()
         with st.status("Generating HCP Outlook", expanded=True) as status:
             st.write("Reading current data")
             st.write("Retrieving historical analogs")
