@@ -46,7 +46,14 @@ from app.services.scenario_lab import (
     scenario_comparison_matrix,
     scenario_lab_dashboard_data,
 )
-from app.services.scenario_presentation import DEMO_SCENARIO, generate_presentation_outlook, safe_generate_presentation_outlook
+from app.services.scenario_presentation import (
+    DEMO_SCENARIO,
+    generate_presentation_outlook,
+    parse_free_text_scenario,
+    safe_generate_presentation_outlook,
+    scenario_input_options,
+    scenario_summary,
+)
 from app.services import run_research_workflow
 from app.services.storage import write_jsonl
 
@@ -313,6 +320,23 @@ def scenario_lab() -> dict:
 @app.post("/scenario-lab/demo")
 def scenario_lab_demo() -> dict:
     return create_demo_three_phase_sequence()
+
+
+@app.get("/scenario-lab/options")
+def scenario_lab_options() -> dict:
+    return scenario_input_options()
+
+
+@app.post("/scenario-lab/parse")
+def scenario_lab_parse(payload: dict) -> dict:
+    scenario = parse_free_text_scenario(payload.get("text", ""))
+    return {"status": "ok", "scenario": scenario, "summary": scenario_summary(scenario)}
+
+
+@app.post("/scenario-lab/summary")
+def scenario_lab_summary(payload: dict) -> dict:
+    scenario = payload.get("scenario", payload)
+    return {"status": "ok", "summary": scenario_summary(scenario)}
 
 
 @app.post("/scenario-lab/outlook")

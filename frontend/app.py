@@ -56,6 +56,7 @@ def refresh_artifacts() -> None:
     st.session_state.historical_postmortems = api_get("/institutional/postmortems", [])
     st.session_state.ic_reports = api_get("/investment-committee/reports", [])
     st.session_state.scenario_lab = api_get("/scenario-lab", {})
+    st.session_state.scenario_options = api_get("/scenario-lab/options", {"presets": {}})
     st.session_state.regimes = api_get("/regimes", [])
     st.session_state.backtests = api_get("/backtests/historical", [])
     st.session_state.lessons = api_get("/memory/lessons", {})
@@ -165,6 +166,104 @@ def latest_report() -> dict[str, Any] | None:
     return reports[0] if reports else None
 
 
+def default_scenario() -> dict[str, Any]:
+    presets = (st.session_state.get("scenario_options") or {}).get("presets", {})
+    return dict(presets.get("Inflation Surprise + Strong Growth", {
+        "scenario_name": "Inflation Surprise + Strong Growth",
+        "scenario_description": "Inflation surprises higher, growth remains strong, and the Fed delays tightening.",
+        "growth_outlook": "strong acceleration",
+        "inflation_direction": "sharply higher",
+        "inflation_surprise": "large upside surprise",
+        "recession_probability": 0.2,
+        "market_volatility": "normal",
+        "central_bank_stance": "gradually tightening",
+        "fed_position": "behind the curve",
+        "labor_market": "overheating",
+        "financial_conditions": "loose",
+        "credit_stress": 2,
+        "dollar_outlook": "moderately stronger",
+        "commodity_shock": "energy shock",
+        "equity_valuation": "expensive",
+        "time_horizon": "7-14 months",
+        "probability": 0.55,
+        "countries_or_regions": ["U.S.", "Eurozone"],
+        "custom_assumptions": "",
+        "risks": [],
+        "invalidation_triggers": [],
+    }))
+
+
+def option_index(options: list[str], value: Any) -> int:
+    return options.index(value) if value in options else 0
+
+
+def merge_builder_updates(builder: dict[str, Any]) -> dict[str, Any]:
+    options = st.session_state.get("scenario_options") or {}
+    region_options = options.get("countries_or_regions", [])
+    existing_regions = builder.get("countries_or_regions", ["U.S."])
+    selected_regions = [region for region in existing_regions if region in region_options]
+    custom_regions = ", ".join(region for region in existing_regions if region not in region_options)
+    with st.form("structured_scenario_editor"):
+        st.subheader("Structured Scenario Summary")
+        c1, c2 = st.columns(2)
+        scenario_name = c1.text_input("Scenario name", value=builder.get("scenario_name", "Custom Macro Scenario"))
+        scenario_description = c2.text_area("Scenario description", value=builder.get("scenario_description", ""), height=90)
+        c1, c2, c3 = st.columns(3)
+        growth = c1.selectbox("Growth", options.get("growth_outlook", []), index=option_index(options.get("growth_outlook", []), builder.get("growth_outlook")))
+        inflation = c2.selectbox("Inflation", options.get("inflation_direction", []), index=option_index(options.get("inflation_direction", []), builder.get("inflation_direction")))
+        inflation_surprise = c3.selectbox("Inflation surprise", options.get("inflation_surprise", []), index=option_index(options.get("inflation_surprise", []), builder.get("inflation_surprise")))
+        c1, c2, c3 = st.columns(3)
+        fed_stance = c1.selectbox("Fed / central bank stance", options.get("central_bank_stance", []), index=option_index(options.get("central_bank_stance", []), builder.get("central_bank_stance")))
+        fed_position = c2.selectbox("Fed position", options.get("fed_position", []), index=option_index(options.get("fed_position", []), builder.get("fed_position")))
+        labor = c3.selectbox("Labor market", options.get("labor_market", []), index=option_index(options.get("labor_market", []), builder.get("labor_market")))
+        c1, c2, c3 = st.columns(3)
+        financial = c1.selectbox("Financial conditions", options.get("financial_conditions", []), index=option_index(options.get("financial_conditions", []), builder.get("financial_conditions")))
+        volatility = c2.selectbox("Market volatility", options.get("market_volatility", []), index=option_index(options.get("market_volatility", []), builder.get("market_volatility")))
+        credit_stress = c3.slider("Credit stress", 0, 10, int(builder.get("credit_stress", 3)))
+        c1, c2, c3 = st.columns(3)
+        dollar = c1.selectbox("Dollar outlook", options.get("dollar_outlook", []), index=option_index(options.get("dollar_outlook", []), builder.get("dollar_outlook")))
+        commodity = c2.selectbox("Commodity shock", options.get("commodity_shock", []), index=option_index(options.get("commodity_shock", []), builder.get("commodity_shock")))
+        valuation = c3.selectbox("Equity valuation", options.get("equity_valuation", []), index=option_index(options.get("equity_valuation", []), builder.get("equity_valuation")))
+        c1, c2, c3 = st.columns(3)
+        horizon = c1.selectbox("Time horizon", options.get("time_horizon", []), index=option_index(options.get("time_horizon", []), builder.get("time_horizon")))
+        recession = c2.slider("Recession probability", 0.0, 1.0, float(builder.get("recession_probability", 0.3)), 0.01)
+        probability = c3.slider("Scenario probability", 0.0, 1.0, float(builder.get("probability", 0.5)), 0.01)
+        c1, c2 = st.columns(2)
+        countries = c1.multiselect("Countries/regions", region_options, default=selected_regions)
+        custom_countries = c2.text_input("Custom regions", value=custom_regions)
+        custom_assumptions = st.text_area("Custom assumptions", value=builder.get("custom_assumptions", ""), height=90)
+        risks = st.text_area("Risks", value="\n".join(builder.get("risks", [])), height=90)
+        invalidation = st.text_area("Invalidation triggers", value="\n".join(builder.get("invalidation_triggers", [])), height=90)
+        c1, c2 = st.columns([1, 1])
+        save_summary = c1.form_submit_button("Update Scenario Summary", use_container_width=True)
+        generate = c2.form_submit_button("Generate HCP Outlook", type="primary", use_container_width=True)
+    regions = countries + [item.strip() for item in custom_countries.split(",") if item.strip()]
+    updated = {
+        "scenario_name": scenario_name,
+        "scenario_description": scenario_description,
+        "growth_outlook": growth,
+        "inflation_direction": inflation,
+        "inflation_surprise": inflation_surprise,
+        "central_bank_stance": fed_stance,
+        "fed_position": fed_position,
+        "labor_market": labor,
+        "financial_conditions": financial,
+        "market_volatility": volatility,
+        "credit_stress": credit_stress,
+        "dollar_outlook": dollar,
+        "commodity_shock": commodity,
+        "equity_valuation": valuation,
+        "time_horizon": horizon,
+        "recession_probability": recession,
+        "probability": probability,
+        "countries_or_regions": regions,
+        "custom_assumptions": custom_assumptions,
+        "risks": [item.strip() for item in risks.splitlines() if item.strip()],
+        "invalidation_triggers": [item.strip() for item in invalidation.splitlines() if item.strip()],
+    }
+    return {"scenario": updated, "save_summary": save_summary, "generate": generate}
+
+
 st.set_page_config(page_title="HCP Macro Theme AI", layout="wide")
 st.session_state.setdefault("api_warnings", [])
 st.session_state.api_warnings = []
@@ -218,62 +317,54 @@ tabs = st.tabs(
 
 with tabs[0]:
     st.header("Scenario Lab")
-    st.write("Enter a macro scenario, then generate a polished HCP outlook and investment committee report.")
-    with st.form("scenario_form"):
-        st.subheader("Scenario Definition")
-        scenario_name = st.text_input("Scenario name", value="Inflation Surprise Cycle - Phase 1")
-        scenario_description = st.text_area(
-            "Scenario description",
-            value="Inflation surprises higher, growth remains strong, and the Fed delays tightening.",
-            height=90,
-        )
-        c1, c2 = st.columns(2)
-        growth = c1.selectbox("Growth outlook", ["strong", "mixed", "slowing", "contracting"], index=0)
-        inflation = c2.selectbox("Inflation outlook", ["rising", "elevated", "stable", "falling", "mixed"], index=0)
-        c1, c2 = st.columns(2)
-        stance = c1.selectbox("Central bank stance", ["delayed_tightening", "tightening", "aggressive_tightening", "restrictive", "easing"], index=0)
-        policy = c2.text_input("Expected policy response", value="Fed stays patient initially, then risks a faster catch-up.")
-        c1, c2, c3 = st.columns(3)
-        countries = c1.text_input("Countries or regions", value="United States, Global developed markets")
-        horizon = c2.text_input("Time horizon", value="7-14 months")
-        probability = c3.slider("Scenario probability", 0.05, 0.95, 0.55, 0.05)
-        c1, c2, c3 = st.columns(3)
-        recession_probability = c1.slider("Bear/tail probability", 0.05, 0.85, 0.25, 0.05)
-        conviction = c2.slider("Research conviction", 0.0, 10.0, 7.5, 0.5)
-        inflation_surprise = c3.selectbox("Inflation surprise", ["higher", "modest", "lower", "none"], index=0)
-        risks = st.text_area(
-            "Main risks",
-            value="Inflation falls before policy expectations reprice.\nGrowth weakens abruptly.\nCommodity supply improves faster than expected.",
-            height=110,
-        )
-        invalidation = st.text_area(
-            "Invalidation triggers",
-            value="Core inflation trends decisively lower for three consecutive releases.\nPayroll growth weakens materially.\nFed communication turns preemptively restrictive.",
-            height=110,
-        )
-        submitted = st.form_submit_button("Generate HCP Outlook", type="primary", use_container_width=True)
+    st.write("Describe a macro scenario in plain English or build one with controls, then review the structured assumptions before generating an HCP outlook.")
+    st.session_state.setdefault("scenario_builder", default_scenario())
+    options = st.session_state.get("scenario_options") or {"presets": {}}
 
-    if submitted:
-        scenario = {
-            "scenario_name": scenario_name,
-            "scenario_description": scenario_description,
-            "growth_direction": growth,
-            "inflation_direction": inflation,
-            "inflation_surprise": inflation_surprise,
-            "central_bank_policy_stance": stance,
-            "expected_policy_path": policy,
-            "central_bank_curve_position": "behind" if stance == "delayed_tightening" else "neutral",
-            "labor_market_conditions": "tight" if growth == "strong" else "mixed",
-            "financial_conditions": "easy" if stance == "delayed_tightening" else "mixed",
-            "fiscal_conditions": "neutral",
-            "countries_or_regions": [item.strip() for item in countries.split(",") if item.strip()],
-            "scenario_duration": horizon,
-            "probability": probability,
-            "recession_probability": recession_probability,
-            "conviction": conviction,
-            "risks": [item.strip() for item in risks.splitlines() if item.strip()],
-            "invalidation_triggers": [item.strip() for item in invalidation.splitlines() if item.strip()],
-        }
+    input_tabs = st.tabs(["Describe a Scenario", "Build a Scenario"])
+    with input_tabs[0]:
+        scenario_text = st.text_area(
+            "Plain-English scenario",
+            value="Inflation surprises higher, growth remains strong, and the Fed delays tightening.",
+            height=160,
+        )
+        if st.button("Parse Scenario", use_container_width=True):
+            parsed = api_post("/scenario-lab/parse", {"text": scenario_text}, {})
+            if parsed.get("scenario"):
+                st.session_state.scenario_builder = parsed["scenario"]
+                st.success("Scenario parsed. Review and edit the extracted fields below.")
+        st.caption("The parser is rule-based for the demo. You can edit every extracted field before analysis.")
+
+    with input_tabs[1]:
+        st.markdown("**Scenario Presets**")
+        preset_names = list(options.get("presets", {}).keys())
+        for row_start in range(0, len(preset_names), 5):
+            cols = st.columns(5)
+            for col, name in zip(cols, preset_names[row_start:row_start + 5]):
+                if col.button(name, key=f"preset_{name}", use_container_width=True):
+                    st.session_state.scenario_builder = dict(options["presets"][name])
+                    st.success(f"Loaded preset: {name}")
+        st.caption("Presets populate the controls, but all fields remain editable.")
+
+    editor = merge_builder_updates(st.session_state.scenario_builder)
+    st.session_state.scenario_builder = editor["scenario"]
+    summary = api_post("/scenario-lab/summary", {"scenario": st.session_state.scenario_builder}, {"summary": {}})
+    st.markdown("**Pre-Analysis Summary**")
+    summary_rows = [{"assumption": key, "value": value} for key, value in summary.get("summary", {}).items()]
+    table(summary_rows, ["assumption", "value"], "No scenario summary available yet.")
+
+    phases = (st.session_state.get("scenario_lab") or {}).get("phases", [])
+    if phases:
+        with st.expander("Reopen / Copy Previous Scenario"):
+            labels = [f"{row.get('created_at')} | {row.get('scenario', {}).get('scenario_name')}" for row in phases]
+            selected = st.selectbox("Saved scenario", labels)
+            if st.button("Copy Selected Scenario Into Editor"):
+                st.session_state.scenario_builder = dict(phases[labels.index(selected)].get("scenario", {}))
+                st.rerun()
+
+    if editor["save_summary"]:
+        st.success("Scenario summary updated.")
+    if editor["generate"]:
         with st.status("Generating HCP Outlook", expanded=True) as status:
             st.write("Reading current data")
             st.write("Retrieving historical analogs")
@@ -282,7 +373,7 @@ with tabs[0]:
             st.write("Building final outlook")
             st.session_state.scenario_outlook = api_post(
                 "/scenario-lab/outlook",
-                {"scenario": scenario, "sequence_name": "Manager Demo Scenario"},
+                {"scenario": st.session_state.scenario_builder, "sequence_name": "Manager Demo Scenario"},
                 {},
             )
             refresh_artifacts()

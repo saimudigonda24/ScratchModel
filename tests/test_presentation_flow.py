@@ -4,7 +4,10 @@ from app.services.scenario_presentation import (
     data_mode_label,
     generate_presentation_outlook,
     outlook_to_markdown,
+    parse_free_text_scenario,
     safe_generate_presentation_outlook,
+    scenario_input_options,
+    scenario_summary,
 )
 
 
@@ -100,3 +103,102 @@ def test_scenario_api_failure_is_graceful(monkeypatch):
     assert response["status"] == "not_ready"
     assert response["reason"] == "scenario_outlook_generation_failed"
     assert response["warnings"]
+
+
+def test_free_text_scenario_parsing_extracts_assumptions():
+    parsed = parse_free_text_scenario("Inflation surprises higher, growth remains strong, and the Fed delays tightening.")
+
+    assert parsed["growth_outlook"] == "strong acceleration"
+    assert parsed["inflation_surprise"] == "large upside surprise"
+    assert parsed["fed_position"] == "behind the curve"
+    assert parsed["central_bank_stance"] == "gradually tightening"
+
+
+def test_presets_expose_expected_defaults():
+    presets = scenario_input_options()["presets"]
+
+    assert presets["Fed Overtightening / Recession"]["recession_probability"] >= 0.7
+    assert presets["Credit Stress Event"]["credit_stress"] == 9
+    assert presets["Dollar Squeeze"]["dollar_outlook"] == "sharply stronger"
+
+
+def test_scenario_summary_formatting():
+    summary = scenario_summary(
+        {
+            **DEMO_SCENARIO,
+            "growth_outlook": "slowing growth",
+            "market_volatility": "high",
+            "credit_stress": 8,
+            "dollar_outlook": "sharply stronger",
+            "countries_or_regions": ["U.S.", "Eurozone"],
+        }
+    )
+
+    assert summary["growth"] == "slowing growth"
+    assert summary["volatility"] == "high"
+    assert summary["credit stress"] == 8
+    assert summary["countries"] == "U.S., Eurozone"
+
+
+def test_slider_dropdown_values_reach_backend_and_persist(monkeypatch):
+    monkeypatch.setattr("app.services.scenario_presentation.ingest_all_sources", lambda: FakeSnapshot())
+    scenario = {
+        **DEMO_SCENARIO,
+        "scenario_name": "Persistence Test Scenario",
+        "recession_probability": 0.82,
+        "market_volatility": "crisis",
+        "credit_stress": 9,
+        "dollar_outlook": "sharply stronger",
+        "commodity_shock": "broad commodity shock",
+        "countries_or_regions": ["U.S.", "India"],
+    }
+
+    outlook = generate_presentation_outlook(scenario, sequence_name="Persistence Controls Test")
+
+    definition = outlook["scenario_definition"]
+    assert definition["market_volatility"] == "crisis"
+    assert definition["credit_stress"] == 9
+    assert definition["dollar_outlook"] == "sharply stronger"
+    assert definition["commodity_shock"] == "broad commodity shock"
+    assert definition["countries_or_regions"] == ["U.S.", "India"]
+
+
+def test_recommendations_change_with_recession_volatility_and_fed_stance(monkeypatch):
+    monkeypatch.setattr("app.services.scenario_presentation.ingest_all_sources", lambda: FakeSnapshot())
+    benign = generate_presentation_outlook(
+        {
+            **DEMO_SCENARIO,
+            "scenario_name": "Benign Scenario",
+            "recession_probability": 0.15,
+            "market_volatility": "low",
+            "central_bank_stance": "gradually easing",
+            "fed_position": "roughly on time",
+            "financial_conditions": "loose",
+            "credit_stress": 1,
+            "commodity_shock": "none",
+        },
+        sequence_name="Sensitivity Test Benign",
+    )
+    stress = generate_presentation_outlook(
+        {
+            **DEMO_SCENARIO,
+            "scenario_name": "Stress Scenario",
+            "recession_probability": 0.8,
+            "market_volatility": "crisis",
+            "central_bank_stance": "aggressively tightening",
+            "fed_position": "ahead of the curve",
+            "financial_conditions": "severely tight",
+            "credit_stress": 9,
+            "dollar_outlook": "sharply stronger",
+        },
+        sequence_name="Sensitivity Test Stress",
+    )
+
+    benign_names = {row["name"] for row in benign["top_opportunities"]}
+    stress_names = {row["name"] for row in stress["top_opportunities"]}
+    stress_hedges = {row["hedge_name"] for row in stress["recommended_hedges"]}
+
+    assert "Short high-yield credit / own quality credit" in stress_names
+    assert "Long equity volatility" in stress_hedges
+    assert benign_names != stress_names
+    assert stress["bear_tail_case"]["probability"] > benign["bear_tail_case"]["probability"]

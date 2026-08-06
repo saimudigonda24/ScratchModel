@@ -58,7 +58,329 @@ PROXY_MAP = {
     "Equity volatility": ("VIXY", "SPY"),
     "Defensive equities": ("SPLV", "SPY"),
     "Small caps": ("IWM", "SPY"),
+    "Short high-yield credit / own quality credit": ("HYG", "LQD"),
+    "Long equity volatility": ("VIXY", "SPY"),
+    "Long US dollar": ("UUP", "BIL"),
+    "Commodity shock basket": ("DBC", "SPY"),
+    "Defensive cash / T-bills": ("BIL", "SPY"),
 }
+
+GROWTH_OPTIONS = ["strong acceleration", "moderate growth", "slowing growth", "stagnation", "recession"]
+INFLATION_OPTIONS = ["sharply higher", "moderately higher", "stable", "disinflation", "deflation"]
+INFLATION_SURPRISE_OPTIONS = ["large downside surprise", "small downside surprise", "in line", "small upside surprise", "large upside surprise"]
+VOLATILITY_OPTIONS = ["very low", "low", "normal", "high", "crisis"]
+CENTRAL_BANK_OPTIONS = ["aggressively easing", "gradually easing", "neutral", "gradually tightening", "aggressively tightening"]
+FED_POSITION_OPTIONS = ["ahead of the curve", "roughly on time", "behind the curve"]
+LABOR_OPTIONS = ["overheating", "strong", "cooling", "weak", "recessionary"]
+FINANCIAL_CONDITIONS_OPTIONS = ["very loose", "loose", "neutral", "tight", "severely tight"]
+DOLLAR_OPTIONS = ["sharply weaker", "moderately weaker", "stable", "moderately stronger", "sharply stronger"]
+COMMODITY_SHOCK_OPTIONS = ["none", "energy shock", "food shock", "metals shock", "broad commodity shock"]
+EQUITY_VALUATION_OPTIONS = ["very cheap", "cheap", "fair", "expensive", "very expensive"]
+TIME_HORIZON_OPTIONS = ["1-3 months", "3-6 months", "6-12 months", "7-14 months", "12-24 months"]
+REGION_OPTIONS = ["U.S.", "Eurozone", "U.K.", "Japan", "China", "India", "emerging markets"]
+
+
+SCENARIO_PRESETS = {
+    "Inflation Surprise + Strong Growth": {
+        "scenario_name": "Inflation Surprise + Strong Growth",
+        "scenario_description": "Inflation surprises higher while growth remains resilient and policy response lags.",
+        "growth_outlook": "strong acceleration",
+        "inflation_direction": "sharply higher",
+        "inflation_surprise": "large upside surprise",
+        "recession_probability": 0.2,
+        "market_volatility": "normal",
+        "central_bank_stance": "gradually tightening",
+        "fed_position": "behind the curve",
+        "labor_market": "overheating",
+        "financial_conditions": "loose",
+        "credit_stress": 2,
+        "dollar_outlook": "moderately stronger",
+        "commodity_shock": "energy shock",
+        "equity_valuation": "expensive",
+        "time_horizon": "7-14 months",
+        "probability": 0.55,
+        "countries_or_regions": ["U.S.", "Eurozone"],
+        "custom_assumptions": "Watch whether higher nominal growth supports real assets before policy catches up.",
+    },
+    "Fed Behind the Curve": {
+        "scenario_name": "Fed Behind the Curve",
+        "scenario_description": "The Fed reacts too slowly to persistent inflation and financial conditions remain too easy.",
+        "growth_outlook": "moderate growth",
+        "inflation_direction": "moderately higher",
+        "inflation_surprise": "small upside surprise",
+        "recession_probability": 0.3,
+        "market_volatility": "high",
+        "central_bank_stance": "gradually tightening",
+        "fed_position": "behind the curve",
+        "labor_market": "strong",
+        "financial_conditions": "loose",
+        "credit_stress": 3,
+        "dollar_outlook": "moderately stronger",
+        "commodity_shock": "none",
+        "equity_valuation": "expensive",
+        "time_horizon": "6-12 months",
+        "probability": 0.5,
+        "countries_or_regions": ["U.S."],
+    },
+    "Fed Overtightening / Recession": {
+        "scenario_name": "Fed Overtightening / Recession",
+        "scenario_description": "Restrictive policy bites harder than expected and recession risk becomes the dominant regime.",
+        "growth_outlook": "recession",
+        "inflation_direction": "disinflation",
+        "inflation_surprise": "small downside surprise",
+        "recession_probability": 0.7,
+        "market_volatility": "crisis",
+        "central_bank_stance": "aggressively tightening",
+        "fed_position": "ahead of the curve",
+        "labor_market": "recessionary",
+        "financial_conditions": "severely tight",
+        "credit_stress": 8,
+        "dollar_outlook": "sharply stronger",
+        "commodity_shock": "none",
+        "equity_valuation": "fair",
+        "time_horizon": "6-12 months",
+        "probability": 0.45,
+        "countries_or_regions": ["U.S.", "Eurozone", "emerging markets"],
+    },
+    "Soft Landing": {
+        "scenario_name": "Soft Landing",
+        "scenario_description": "Growth slows but avoids recession while inflation cools enough for policy to become less restrictive.",
+        "growth_outlook": "moderate growth",
+        "inflation_direction": "disinflation",
+        "inflation_surprise": "in line",
+        "recession_probability": 0.25,
+        "market_volatility": "low",
+        "central_bank_stance": "gradually easing",
+        "fed_position": "roughly on time",
+        "labor_market": "cooling",
+        "financial_conditions": "neutral",
+        "credit_stress": 3,
+        "dollar_outlook": "moderately weaker",
+        "commodity_shock": "none",
+        "equity_valuation": "fair",
+        "time_horizon": "7-14 months",
+        "probability": 0.5,
+        "countries_or_regions": ["U.S.", "Eurozone", "Japan"],
+    },
+    "Stagflation": {
+        "scenario_name": "Stagflation",
+        "scenario_description": "Growth stagnates while inflation rises and policy faces a bad trade-off.",
+        "growth_outlook": "stagnation",
+        "inflation_direction": "sharply higher",
+        "inflation_surprise": "large upside surprise",
+        "recession_probability": 0.55,
+        "market_volatility": "high",
+        "central_bank_stance": "gradually tightening",
+        "fed_position": "behind the curve",
+        "labor_market": "cooling",
+        "financial_conditions": "tight",
+        "credit_stress": 6,
+        "dollar_outlook": "moderately stronger",
+        "commodity_shock": "broad commodity shock",
+        "equity_valuation": "expensive",
+        "time_horizon": "7-14 months",
+        "probability": 0.4,
+        "countries_or_regions": ["U.S.", "Eurozone", "U.K."],
+    },
+    "Deflation Shock": {
+        "scenario_name": "Deflation Shock",
+        "scenario_description": "Demand weakens abruptly, inflation falls below expectations, and policy pivots toward easing.",
+        "growth_outlook": "recession",
+        "inflation_direction": "deflation",
+        "inflation_surprise": "large downside surprise",
+        "recession_probability": 0.75,
+        "market_volatility": "crisis",
+        "central_bank_stance": "aggressively easing",
+        "fed_position": "ahead of the curve",
+        "labor_market": "recessionary",
+        "financial_conditions": "severely tight",
+        "credit_stress": 9,
+        "dollar_outlook": "moderately stronger",
+        "commodity_shock": "none",
+        "equity_valuation": "cheap",
+        "time_horizon": "3-6 months",
+        "probability": 0.3,
+        "countries_or_regions": ["U.S.", "China", "emerging markets"],
+    },
+    "Risk-On Liquidity Boom": {
+        "scenario_name": "Risk-On Liquidity Boom",
+        "scenario_description": "Liquidity improves, policy is easier than feared, and risk appetite broadens.",
+        "growth_outlook": "strong acceleration",
+        "inflation_direction": "stable",
+        "inflation_surprise": "in line",
+        "recession_probability": 0.15,
+        "market_volatility": "very low",
+        "central_bank_stance": "gradually easing",
+        "fed_position": "roughly on time",
+        "labor_market": "strong",
+        "financial_conditions": "very loose",
+        "credit_stress": 1,
+        "dollar_outlook": "moderately weaker",
+        "commodity_shock": "none",
+        "equity_valuation": "fair",
+        "time_horizon": "3-6 months",
+        "probability": 0.45,
+        "countries_or_regions": ["U.S.", "emerging markets"],
+    },
+    "Dollar Squeeze": {
+        "scenario_name": "Dollar Squeeze",
+        "scenario_description": "Global funding stress and U.S. rate support push the dollar sharply higher.",
+        "growth_outlook": "slowing growth",
+        "inflation_direction": "stable",
+        "inflation_surprise": "in line",
+        "recession_probability": 0.45,
+        "market_volatility": "high",
+        "central_bank_stance": "gradually tightening",
+        "fed_position": "ahead of the curve",
+        "labor_market": "cooling",
+        "financial_conditions": "tight",
+        "credit_stress": 7,
+        "dollar_outlook": "sharply stronger",
+        "commodity_shock": "none",
+        "equity_valuation": "expensive",
+        "time_horizon": "1-3 months",
+        "probability": 0.35,
+        "countries_or_regions": ["U.S.", "emerging markets", "Japan"],
+    },
+    "Commodity Supply Shock": {
+        "scenario_name": "Commodity Supply Shock",
+        "scenario_description": "Supply disruption lifts commodity prices and pushes inflation risk higher.",
+        "growth_outlook": "slowing growth",
+        "inflation_direction": "sharply higher",
+        "inflation_surprise": "large upside surprise",
+        "recession_probability": 0.5,
+        "market_volatility": "high",
+        "central_bank_stance": "gradually tightening",
+        "fed_position": "behind the curve",
+        "labor_market": "cooling",
+        "financial_conditions": "tight",
+        "credit_stress": 5,
+        "dollar_outlook": "stable",
+        "commodity_shock": "broad commodity shock",
+        "equity_valuation": "fair",
+        "time_horizon": "6-12 months",
+        "probability": 0.4,
+        "countries_or_regions": ["U.S.", "Eurozone", "China", "emerging markets"],
+    },
+    "Credit Stress Event": {
+        "scenario_name": "Credit Stress Event",
+        "scenario_description": "Credit spreads widen, refinancing risk rises, and equity risk appetite deteriorates.",
+        "growth_outlook": "slowing growth",
+        "inflation_direction": "disinflation",
+        "inflation_surprise": "small downside surprise",
+        "recession_probability": 0.65,
+        "market_volatility": "crisis",
+        "central_bank_stance": "gradually easing",
+        "fed_position": "behind the curve",
+        "labor_market": "weak",
+        "financial_conditions": "severely tight",
+        "credit_stress": 9,
+        "dollar_outlook": "moderately stronger",
+        "commodity_shock": "none",
+        "equity_valuation": "cheap",
+        "time_horizon": "3-6 months",
+        "probability": 0.35,
+        "countries_or_regions": ["U.S.", "Eurozone"],
+    },
+}
+
+
+def scenario_input_options() -> dict[str, Any]:
+    return {
+        "growth_outlook": GROWTH_OPTIONS,
+        "inflation_direction": INFLATION_OPTIONS,
+        "inflation_surprise": INFLATION_SURPRISE_OPTIONS,
+        "market_volatility": VOLATILITY_OPTIONS,
+        "central_bank_stance": CENTRAL_BANK_OPTIONS,
+        "fed_position": FED_POSITION_OPTIONS,
+        "labor_market": LABOR_OPTIONS,
+        "financial_conditions": FINANCIAL_CONDITIONS_OPTIONS,
+        "dollar_outlook": DOLLAR_OPTIONS,
+        "commodity_shock": COMMODITY_SHOCK_OPTIONS,
+        "equity_valuation": EQUITY_VALUATION_OPTIONS,
+        "time_horizon": TIME_HORIZON_OPTIONS,
+        "countries_or_regions": REGION_OPTIONS,
+        "presets": {name: dict(payload) for name, payload in SCENARIO_PRESETS.items()},
+    }
+
+
+def parse_free_text_scenario(text: str) -> dict[str, Any]:
+    lower = text.lower()
+    scenario = dict(SCENARIO_PRESETS["Inflation Surprise + Strong Growth"])
+    scenario["scenario_name"] = _title_from_text(text)
+    scenario["scenario_description"] = text.strip()
+    if any(term in lower for term in ["recession", "hard landing", "contraction", "downturn"]):
+        scenario.update(SCENARIO_PRESETS["Fed Overtightening / Recession"])
+        scenario["scenario_description"] = text.strip()
+    elif any(term in lower for term in ["soft landing", "goldilocks"]):
+        scenario.update(SCENARIO_PRESETS["Soft Landing"])
+        scenario["scenario_description"] = text.strip()
+    elif "stagflation" in lower:
+        scenario.update(SCENARIO_PRESETS["Stagflation"])
+        scenario["scenario_description"] = text.strip()
+    elif any(term in lower for term in ["deflation", "deflationary"]):
+        scenario.update(SCENARIO_PRESETS["Deflation Shock"])
+        scenario["scenario_description"] = text.strip()
+    elif any(term in lower for term in ["dollar squeeze", "usd squeeze", "dollar sharply higher"]):
+        scenario.update(SCENARIO_PRESETS["Dollar Squeeze"])
+        scenario["scenario_description"] = text.strip()
+    elif any(term in lower for term in ["credit stress", "spreads widen", "refinancing"]):
+        scenario.update(SCENARIO_PRESETS["Credit Stress Event"])
+        scenario["scenario_description"] = text.strip()
+
+    if any(term in lower for term in ["growth remains strong", "strong growth", "growth accelerates"]):
+        scenario["growth_outlook"] = "strong acceleration"
+        scenario["recession_probability"] = min(float(scenario["recession_probability"]), 0.25)
+    elif any(term in lower for term in ["growth slows", "slowing growth", "slowdown"]):
+        scenario["growth_outlook"] = "slowing growth"
+        scenario["recession_probability"] = max(float(scenario["recession_probability"]), 0.45)
+
+    if any(term in lower for term in ["inflation surprises higher", "inflation shock", "sticky inflation"]):
+        scenario["inflation_direction"] = "sharply higher"
+        scenario["inflation_surprise"] = "large upside surprise"
+    elif any(term in lower for term in ["disinflation", "inflation cools", "inflation falls"]):
+        scenario["inflation_direction"] = "disinflation"
+        scenario["inflation_surprise"] = "small downside surprise"
+
+    if any(term in lower for term in ["fed delays", "behind the curve", "delayed tightening"]):
+        scenario["fed_position"] = "behind the curve"
+        scenario["central_bank_stance"] = "gradually tightening"
+    elif any(term in lower for term in ["fed overtightening", "aggressive tightening", "tightens aggressively"]):
+        scenario["central_bank_stance"] = "aggressively tightening"
+        scenario["fed_position"] = "ahead of the curve"
+    elif any(term in lower for term in ["fed cuts", "easing", "pivot"]):
+        scenario["central_bank_stance"] = "gradually easing"
+
+    if any(term in lower for term in ["volatility spike", "crisis", "panic"]):
+        scenario["market_volatility"] = "crisis"
+    elif "high volatility" in lower:
+        scenario["market_volatility"] = "high"
+    if any(term in lower for term in ["dollar stronger", "usd stronger", "dollar squeeze"]):
+        scenario["dollar_outlook"] = "sharply stronger"
+    elif any(term in lower for term in ["dollar weaker", "usd weaker"]):
+        scenario["dollar_outlook"] = "moderately weaker"
+    if "energy shock" in lower or "oil shock" in lower:
+        scenario["commodity_shock"] = "energy shock"
+    elif "commodity shock" in lower:
+        scenario["commodity_shock"] = "broad commodity shock"
+    return scenario
+
+
+def scenario_summary(scenario: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_scenario(scenario)
+    return {
+        "growth": normalized["growth_outlook"],
+        "inflation": normalized["inflation_direction"],
+        "Fed stance": normalized["central_bank_stance"],
+        "recession probability": f"{normalized['recession_probability']:.0%}",
+        "volatility": normalized["market_volatility"],
+        "credit stress": normalized["credit_stress"],
+        "dollar": normalized["dollar_outlook"],
+        "commodity shock": normalized["commodity_shock"],
+        "time horizon": normalized["scenario_duration"],
+        "scenario probability": f"{normalized['probability']:.0%}",
+        "countries": ", ".join(normalized.get("countries_or_regions", [])),
+    }
 
 
 def generate_presentation_outlook(
@@ -121,6 +443,7 @@ def build_presentation_outlook(
 ) -> dict[str, Any]:
     scenario = phase["scenario"]
     top_recs = _dedupe_recommendations(recommendations.get("ranked_recommendations", []))
+    top_recs = _dedupe_recommendations(_scenario_specific_recommendations(scenario) + top_recs)
     opportunities = [_opportunity_row(row) for row in top_recs if row.get("category") != "hedge"][:6]
     hedges = [_hedge_row(row, scenario) for row in top_recs if row.get("category") == "hedge"]
     if not hedges:
@@ -136,31 +459,40 @@ def build_presentation_outlook(
         "scenario_definition": {
             "name": scenario["scenario_name"],
             "description": scenario.get("scenario_description", ""),
-            "growth_outlook": scenario["growth_direction"],
+            "growth_outlook": scenario["growth_outlook"],
             "inflation_outlook": scenario["inflation_direction"],
-            "central_bank_stance": scenario["central_bank_policy_stance"],
+            "central_bank_stance": scenario["central_bank_stance"],
             "expected_policy_response": scenario["expected_policy_path"],
             "countries_or_regions": scenario.get("countries_or_regions", ["United States"]),
             "time_horizon": scenario["scenario_duration"],
             "probability": scenario["probability"],
+            "market_volatility": scenario["market_volatility"],
+            "fed_position": scenario["fed_position"],
+            "labor_market": scenario["labor_market"],
+            "financial_conditions": scenario["financial_conditions"],
+            "credit_stress": scenario["credit_stress"],
+            "dollar_outlook": scenario["dollar_outlook"],
+            "commodity_shock": scenario["commodity_shock"],
+            "equity_valuation": scenario["equity_valuation"],
+            "custom_assumptions": scenario.get("custom_assumptions", ""),
             "risks": scenario.get("risks", []),
             "invalidation_triggers": scenario.get("invalidation_triggers", []),
         },
         "executive_outlook": _executive_outlook(scenario, opportunities, hedges),
         "base_case": {
-            "probability": scenario["probability"],
+            "probability": _case_probabilities(scenario)["base"],
             "growth_path": _growth_path(scenario),
             "inflation_path": _inflation_path(scenario),
             "central_bank_response": _central_bank_response(scenario),
             "market_consequence": _market_consequence(cross_asset),
         },
         "bull_case": {
-            "probability": round(max(0.05, 1 - scenario["probability"] - scenario["recession_probability"]), 2),
+            "probability": _case_probabilities(scenario)["bull"],
             "key_trigger": "Inflation pressure proves temporary while nominal growth remains firm.",
             "likely_winners": ["quality equities", "cyclicals", "credit", "REITs"],
         },
         "bear_tail_case": {
-            "probability": scenario["recession_probability"],
+            "probability": _case_probabilities(scenario)["bear_tail"],
             "key_trigger": "Inflation remains sticky enough to force a sharper central-bank catch-up.",
             "likely_losers": ["long-duration equities", "long nominal duration", "high-yield credit"],
             "defensive_response": "Keep hedges explicit, shorten review intervals, and require confirmation before increasing risk.",
@@ -256,28 +588,49 @@ def outlook_to_markdown(outlook: dict[str, Any]) -> str:
 def _normalize_scenario(scenario: dict[str, Any], demo: bool = False) -> dict[str, Any]:
     defaults = DEMO_SCENARIO if demo else {}
     merged = {**defaults, **scenario}
+    growth_outlook = _choice(merged, "growth_outlook", "growth_direction", default="moderate growth")
+    inflation_direction = _choice(merged, "inflation_direction", default="stable")
+    inflation_surprise = _choice(merged, "inflation_surprise", default="in line")
+    central_bank_stance = _choice(merged, "central_bank_stance", "central_bank_policy_stance", default="neutral")
+    fed_position = _choice(merged, "fed_position", "central_bank_curve_position", default="roughly on time")
+    labor_market = _choice(merged, "labor_market", "labor_market_conditions", default="cooling")
+    financial_conditions = _choice(merged, "financial_conditions", default="neutral")
+    time_horizon = _choice(merged, "time_horizon", "scenario_duration", default="7-14 months")
     model = MacroScenario(
         scenario_name=merged.get("scenario_name") or "Custom Macro Scenario",
         scenario_date=merged.get("scenario_date") or datetime.utcnow().date().isoformat(),
-        growth_direction=merged.get("growth_direction") or merged.get("growth_outlook") or "mixed",
-        inflation_direction=merged.get("inflation_direction") or merged.get("inflation_outlook") or "mixed",
-        inflation_surprise=merged.get("inflation_surprise") or "modest",
-        central_bank_policy_stance=merged.get("central_bank_policy_stance") or merged.get("central_bank_stance") or "neutral",
+        growth_direction=_internal_growth(growth_outlook),
+        inflation_direction=_internal_inflation(inflation_direction),
+        inflation_surprise=_internal_inflation_surprise(inflation_surprise),
+        central_bank_policy_stance=_internal_central_bank_stance(central_bank_stance, fed_position),
         expected_policy_path=merged.get("expected_policy_path") or merged.get("expected_policy_response") or "data dependent",
-        central_bank_curve_position=merged.get("central_bank_curve_position") or "neutral",
-        labor_market_conditions=merged.get("labor_market_conditions") or "mixed",
-        financial_conditions=merged.get("financial_conditions") or "mixed",
+        central_bank_curve_position=_internal_fed_position(fed_position),
+        labor_market_conditions=_internal_labor(labor_market),
+        financial_conditions=_internal_financial_conditions(financial_conditions),
         fiscal_conditions=merged.get("fiscal_conditions") or "neutral",
-        recession_probability=float(merged.get("recession_probability", 0.3)),
-        scenario_duration=merged.get("scenario_duration") or merged.get("time_horizon") or "7-14 months",
-        probability=float(merged.get("probability", 0.5)),
+        recession_probability=_clamp_probability(merged.get("recession_probability", 0.3)),
+        scenario_duration=time_horizon,
+        probability=_clamp_probability(merged.get("probability", 0.5)),
         conviction=float(merged.get("conviction", 7.0)),
-        invalidation_triggers=list(merged.get("invalidation_triggers", [])),
+        invalidation_triggers=_as_list(merged.get("invalidation_triggers", [])),
     )
     payload = model.__dict__
+    payload["growth_outlook"] = growth_outlook
+    payload["inflation_direction"] = inflation_direction
+    payload["inflation_surprise_label"] = inflation_surprise
+    payload["central_bank_stance"] = central_bank_stance
+    payload["fed_position"] = fed_position
+    payload["labor_market"] = labor_market
+    payload["financial_conditions"] = financial_conditions
+    payload["market_volatility"] = _choice(merged, "market_volatility", default="normal")
+    payload["credit_stress"] = max(0, min(10, int(float(merged.get("credit_stress", 3)))))
+    payload["dollar_outlook"] = _choice(merged, "dollar_outlook", default="stable")
+    payload["commodity_shock"] = _choice(merged, "commodity_shock", default="none")
+    payload["equity_valuation"] = _choice(merged, "equity_valuation", default="fair")
+    payload["custom_assumptions"] = merged.get("custom_assumptions", "")
     payload["scenario_description"] = merged.get("scenario_description", "")
-    payload["countries_or_regions"] = merged.get("countries_or_regions", ["United States"])
-    payload["risks"] = merged.get("risks", [])
+    payload["countries_or_regions"] = _as_list(merged.get("countries_or_regions", ["United States"]))
+    payload["risks"] = _as_list(merged.get("risks", []))
     return payload
 
 
@@ -293,6 +646,61 @@ def _dedupe_recommendations(recommendations: list[dict[str, Any]]) -> list[dict[
     return unique
 
 
+def _scenario_specific_recommendations(scenario: dict[str, Any]) -> list[dict[str, Any]]:
+    recs = []
+    recession = float(scenario.get("recession_probability", 0.3))
+    volatility = scenario.get("market_volatility", "normal")
+    financial = scenario.get("financial_conditions", "neutral")
+    credit_stress = int(scenario.get("credit_stress", 3))
+    fed = scenario.get("central_bank_stance", "neutral")
+    dollar = scenario.get("dollar_outlook", "stable")
+    commodity_shock = scenario.get("commodity_shock", "none")
+
+    if recession >= 0.6 or financial == "severely tight" or credit_stress >= 7:
+        recs.append(_presentation_rec("Short high-yield credit / own quality credit", "underweight", "credit", "defensive", 0.62, 8.2, "High recession probability, tight financial conditions, and credit stress argue for avoiding weak balance sheets.", "Credit spreads tighten and refinancing risk falls."))
+        recs.append(_presentation_rec("Defensive cash / T-bills", "overweight", "fixed_income", "defensive", 0.6, 7.5, "Cash/T-bill optionality matters when stress and drawdown risk are elevated.", "Policy eases quickly and risk assets recover."))
+    if volatility in {"high", "crisis"}:
+        recs.append(_presentation_rec("Long equity volatility", "long", "volatility", "hedge", 0.58, 7.8, "High selected volatility raises the value of convex protection during stress windows.", "Volatility mean-reverts before portfolio stress materializes."))
+    if fed == "aggressively tightening":
+        recs.append(_presentation_rec("Long-duration nominal bonds", "underweight", "fixed_income", "avoid", 0.6, 7.7, "Aggressive tightening can pressure duration until growth damage dominates.", "Inflation collapses and the Fed pivots."))
+    if fed in {"aggressively easing", "gradually easing"} and recession < 0.5:
+        recs.append(_presentation_rec("Quality balance-sheet equities", "overweight", "equity", "highest_conviction", 0.57, 7.4, "Easing with contained recession risk can support quality risk assets.", "Earnings recession overwhelms easier policy."))
+    if dollar in {"moderately stronger", "sharply stronger"}:
+        recs.append(_presentation_rec("Long US dollar", "long", "fx_rates", "defensive", 0.59, 7.6, "Dollar strength can protect against global funding stress and pressure foreign-risk exposure.", "Fed repricing turns dovish or non-U.S. growth surprises higher."))
+    if commodity_shock != "none":
+        recs.append(_presentation_rec("Commodity shock basket", "long", "commodity", "asymmetric", 0.58, 7.8, f"{commodity_shock} raises inflation risk and supports real-asset hedges.", "Supply normalizes or demand destruction dominates."))
+    return recs
+
+
+def _case_probabilities(scenario: dict[str, Any]) -> dict[str, float]:
+    bear = _clamp_probability(scenario.get("recession_probability", 0.3))
+    selected_base = _clamp_probability(scenario.get("probability", 0.5))
+    base = min(selected_base, max(0.05, 1 - bear))
+    bull = max(0.0, 1 - base - bear)
+    if bull < 0.05 and bear < 0.95:
+        shortfall = 0.05 - bull
+        base = max(0.05, base - shortfall)
+        bull = max(0.0, 1 - base - bear)
+    return {"base": round(base, 2), "bull": round(bull, 2), "bear_tail": round(bear, 2)}
+
+
+def _presentation_rec(asset: str, direction: str, asset_class: str, category: str, probability: float, conviction: float, thesis: str, invalidation: str) -> dict[str, Any]:
+    return {
+        "asset_or_trade": asset,
+        "asset_class": asset_class,
+        "direction": direction,
+        "category": category,
+        "investment_thesis": thesis,
+        "expected_return_range": [-0.04, 0.12],
+        "probability_of_success": probability,
+        "conviction": conviction,
+        "major_risks": ["Timing error", "Scenario path changes", "Implementation basis risk"],
+        "hedge": "Research hypothesis - requires human review.",
+        "invalidation_condition": invalidation,
+        "expected_time_horizon": "7-14 months",
+    }
+
+
 def _opportunity_row(row: dict[str, Any]) -> dict[str, Any]:
     proxy, benchmark = PROXY_MAP.get(row["asset_or_trade"], ("SPY", "SPY"))
     return {
@@ -301,7 +709,7 @@ def _opportunity_row(row: dict[str, Any]) -> dict[str, Any]:
         "asset_class": row["asset_class"],
         "direction": row["direction"],
         "conviction_score": row["conviction"],
-        "expected_horizon": row["expected_time_horizon"],
+        "expected_horizon": row.get("expected_time_horizon", "7-14 months"),
         "proxy_ticker": proxy,
         "benchmark": benchmark,
         "conditions_for_entry": "Enter research queue when incoming data confirms the scenario direction and liquidity is adequate.",
@@ -318,7 +726,7 @@ def _hedge_row(row: dict[str, Any], scenario: dict[str, Any]) -> dict[str, Any]:
     return {
         "label": "Research hypothesis - requires human review.",
         "hedge_name": row["asset_or_trade"],
-        "risk_protected_against": "Policy mistake, growth shock, or inflation credibility risk.",
+        "risk_protected_against": _hedge_risk(row, scenario),
         "implementation_concept": f"Use proxy {proxy} as the measurable research instrument; size against approved portfolio risk.",
         "expected_cost_or_drag": "May lag in risk-on periods or when real yields move against the hedge.",
         "expected_payoff_condition": row["investment_thesis"],
@@ -326,7 +734,27 @@ def _hedge_row(row: dict[str, Any], scenario: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _hedge_risk(row: dict[str, Any], scenario: dict[str, Any]) -> str:
+    if row.get("asset_or_trade") == "Long equity volatility":
+        return "High volatility, equity drawdown, and stress-window risk."
+    if scenario.get("credit_stress", 0) >= 7:
+        return "Credit spread widening and refinancing stress."
+    if scenario.get("commodity_shock") != "none":
+        return "Commodity-led inflation shock and policy credibility risk."
+    return "Policy mistake, growth shock, or inflation credibility risk."
+
+
 def _fallback_hedge(scenario: dict[str, Any]) -> dict[str, Any]:
+    if scenario.get("market_volatility") in {"high", "crisis"}:
+        return {
+            "label": "Research hypothesis - requires human review.",
+            "hedge_name": "Long equity volatility",
+            "risk_protected_against": "High volatility, equity drawdown, and credit-spread shock.",
+            "implementation_concept": "Use VIXY as a liquid proxy for measurement; human review required.",
+            "expected_cost_or_drag": "High carry drag if volatility mean-reverts or markets rally.",
+            "expected_payoff_condition": "Pays if stress windows deepen or volatility remains elevated.",
+            "major_limitation": "Timing and roll costs can overwhelm payoff if stress arrives late.",
+        }
     return {
         "label": "Research hypothesis - requires human review.",
         "hedge_name": "Gold / policy credibility hedge",
@@ -373,6 +801,29 @@ def _matching_rec(asset: str, recommendations: list[dict[str, Any]]) -> dict[str
 
 
 def _default_asset_view(asset: str, scenario: dict[str, Any]) -> tuple[str, float, str, str]:
+    recession = float(scenario.get("recession_probability", 0.3))
+    volatility = scenario.get("market_volatility", "normal")
+    financial = scenario.get("financial_conditions", "neutral")
+    credit_stress = int(scenario.get("credit_stress", 3))
+    dollar = scenario.get("dollar_outlook", "stable")
+    commodity_shock = scenario.get("commodity_shock", "none")
+    valuation = scenario.get("equity_valuation", "fair")
+    if asset == "equities" and (recession >= 0.6 or volatility in {"high", "crisis"} or financial in {"tight", "severely tight"}):
+        return "cautious / underweight candidate", 7.0, f"Recession probability at {recession:.0%}, {volatility} volatility, and {financial} financial conditions argue for lower equity beta.", "Growth reaccelerates or policy eases quickly."
+    if asset == "equities" and valuation in {"very cheap", "cheap"} and recession < 0.35:
+        return "positive / overweight candidate", 6.7, "Valuation support and contained recession risk can improve equity asymmetry.", "Earnings revisions deteriorate."
+    if asset == "credit" and (credit_stress >= 6 or financial in {"tight", "severely tight"}):
+        return "underweight / avoid weakest credit", 7.5, f"Credit stress at {credit_stress}/10 and {financial} financial conditions raise refinancing and spread risk.", "Spreads stabilize and default risk falls."
+    if asset == "currencies" and dollar in {"moderately stronger", "sharply stronger"}:
+        return "favor USD strength", 7.0, "Dollar strength pressures non-U.S. assets, commodities, and EM funding conditions.", "Fed turns dovish or global growth leadership broadens."
+    if asset == "currencies" and dollar in {"moderately weaker", "sharply weaker"}:
+        return "favor non-USD exposure", 6.7, "A weaker dollar can support international equities, EM assets, and commodity liquidity.", "U.S. real rates rise or funding stress returns."
+    if asset in {"commodities", "oil", "MLPs"} and commodity_shock != "none":
+        return "positive / overweight candidate", 7.4, f"{commodity_shock} can lift inflation risk and support real-asset cash flows.", "Supply normalizes or demand weakens."
+    if asset == "gold" and (volatility in {"high", "crisis"} or commodity_shock != "none" or dollar in {"sharply weaker", "moderately weaker"}):
+        return "long / hedge candidate", 7.0, "Gold helps hedge policy credibility, volatility, and real-rate uncertainty.", "Real yields rise sharply."
+    if asset == "cash" and (volatility in {"high", "crisis"} or credit_stress >= 7):
+        return "overweight optionality", 7.0, "Cash protects optionality when volatility or credit stress is high.", "Risk-on liquidity returns quickly."
     if scenario["inflation_direction"] in {"rising", "elevated"} and asset in {"commodities", "gold", "oil", "MLPs"}:
         return "positive / overweight candidate", 6.8, "Inflation surprise can support real assets and nominal cash-flow beneficiaries.", "Inflation rolls over or real rates rise sharply."
     if scenario["central_bank_policy_stance"] == "delayed_tightening" and asset == "cash":
@@ -380,6 +831,148 @@ def _default_asset_view(asset: str, scenario: dict[str, Any]) -> tuple[str, floa
     if asset in {"government bonds", "credit", "crypto"}:
         return "cautious / underweight candidate", 6.2, "Delayed tightening with inflation surprise can pressure duration-sensitive assets.", "Growth shock forces dovish repricing."
     return "mixed / selective", 5.8, "Scenario creates dispersion; require instrument-level confirmation.", "Scenario fails to translate into asset-price leadership."
+
+
+def _choice(values: dict[str, Any], primary: str, legacy: str | None = None, default: str = "") -> str:
+    value = values.get(primary)
+    if value is None and legacy:
+        value = values.get(legacy)
+    return str(value or default)
+
+
+def _clamp_probability(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = 0.5
+    if number > 1:
+        number = number / 100
+    return max(0.0, min(1.0, number))
+
+
+def _as_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        pieces = []
+        for line in value.replace(";", "\n").replace(",", "\n").splitlines():
+            item = line.strip()
+            if item:
+                pieces.append(item)
+        return pieces
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value)]
+
+
+def _internal_growth(value: str) -> str:
+    mapping = {
+        "strong acceleration": "strong",
+        "moderate growth": "strong",
+        "slowing growth": "slowing",
+        "stagnation": "slowing",
+        "recession": "contracting",
+        "strong": "strong",
+        "mixed": "mixed",
+        "slowing": "slowing",
+        "contracting": "contracting",
+    }
+    return mapping.get(value, "mixed")
+
+
+def _internal_inflation(value: str) -> str:
+    mapping = {
+        "sharply higher": "rising",
+        "moderately higher": "rising",
+        "stable": "stable",
+        "disinflation": "falling",
+        "deflation": "falling",
+        "rising": "rising",
+        "elevated": "elevated",
+        "falling": "falling",
+        "mixed": "mixed",
+    }
+    return mapping.get(value, "mixed")
+
+
+def _internal_inflation_surprise(value: str) -> str:
+    mapping = {
+        "large downside surprise": "lower",
+        "small downside surprise": "lower",
+        "in line": "none",
+        "small upside surprise": "higher",
+        "large upside surprise": "higher",
+        "higher": "higher",
+        "lower": "lower",
+        "modest": "modest",
+        "none": "none",
+    }
+    return mapping.get(value, "modest")
+
+
+def _internal_central_bank_stance(value: str, fed_position: str) -> str:
+    mapping = {
+        "aggressively easing": "easing",
+        "gradually easing": "easing",
+        "neutral": "restrictive" if fed_position == "ahead of the curve" else "delayed_tightening" if fed_position == "behind the curve" else "restrictive",
+        "gradually tightening": "delayed_tightening" if fed_position == "behind the curve" else "tightening",
+        "aggressively tightening": "aggressive_tightening",
+        "delayed_tightening": "delayed_tightening",
+        "tightening": "tightening",
+        "aggressive_tightening": "aggressive_tightening",
+        "restrictive": "restrictive",
+        "easing": "easing",
+    }
+    return mapping.get(value, "restrictive")
+
+
+def _internal_fed_position(value: str) -> str:
+    mapping = {
+        "ahead of the curve": "ahead",
+        "roughly on time": "neutral",
+        "behind the curve": "behind",
+        "ahead": "ahead",
+        "neutral": "neutral",
+        "behind": "behind",
+    }
+    return mapping.get(value, "neutral")
+
+
+def _internal_labor(value: str) -> str:
+    mapping = {
+        "overheating": "tight",
+        "strong": "tight",
+        "cooling": "mixed",
+        "weak": "weakening",
+        "recessionary": "weakening",
+        "tight": "tight",
+        "firm": "firm",
+        "mixed": "mixed",
+        "weakening": "weakening",
+    }
+    return mapping.get(value, "mixed")
+
+
+def _internal_financial_conditions(value: str) -> str:
+    mapping = {
+        "very loose": "easy",
+        "loose": "easy",
+        "neutral": "mixed",
+        "tight": "tightening",
+        "severely tight": "tight",
+        "easy": "easy",
+        "tightening": "tightening",
+        "mixed": "mixed",
+        "tight": "tight",
+    }
+    return mapping.get(value, "mixed")
+
+
+def _title_from_text(text: str) -> str:
+    clean = " ".join(text.strip().split())
+    if not clean:
+        return "Custom Macro Scenario"
+    return clean[:70].rstrip(".") if len(clean) <= 70 else clean[:67].rstrip() + "..."
 
 
 def _analog_rows(analogs: dict[str, Any], performance: dict[str, Any]) -> list[dict[str, Any]]:
@@ -409,8 +1002,9 @@ def _executive_outlook(scenario: dict[str, Any], opportunities: list[dict[str, A
     lead = opportunities[0]["name"] if opportunities else "selective cross-asset opportunities"
     hedge = hedges[0]["hedge_name"] if hedges else "explicit downside hedges"
     return (
-        f"The scenario describes a {scenario['scenario_duration']} window where growth remains {scenario['growth_direction']} "
-        f"while inflation is {scenario['inflation_direction']} and policy is {scenario['central_bank_policy_stance'].replace('_', ' ')}. "
+        f"The scenario describes a {scenario['scenario_duration']} window where growth is {scenario['growth_outlook']} "
+        f"while inflation is {scenario['inflation_direction']} and policy is {scenario['central_bank_stance']}. "
+        f"Recession risk is {float(scenario['recession_probability']):.0%}, volatility is {scenario['market_volatility']}, credit stress is {scenario['credit_stress']}/10, and the dollar outlook is {scenario['dollar_outlook']}. "
         f"The central macro implication is that nominal growth may stay firm before central banks fully react, which can favor real-asset and inflation-sensitive research hypotheses. "
         f"The main investment implication is to prioritize {lead} while avoiding unhedged exposure to assets most vulnerable to higher real-rate repricing. "
         f"Central-bank risk is asymmetric because a delayed response can eventually require faster tightening. "
@@ -420,15 +1014,17 @@ def _executive_outlook(scenario: dict[str, Any], opportunities: list[dict[str, A
 
 
 def _growth_path(scenario: dict[str, Any]) -> str:
-    return f"Growth expected to remain {scenario['growth_direction']} over the stated horizon unless labor or credit data weakens."
+    return f"Growth expected to follow a {scenario['growth_outlook']} path; labor market is {scenario['labor_market']} and recession risk is {float(scenario['recession_probability']):.0%}."
 
 
 def _inflation_path(scenario: dict[str, Any]) -> str:
-    return f"Inflation expected to be {scenario['inflation_direction']} with surprise risk skewed {scenario['inflation_surprise']}."
+    shock = scenario.get("commodity_shock", "none")
+    shock_text = "" if shock == "none" else f" Commodity shock assumption: {shock}."
+    return f"Inflation expected to be {scenario['inflation_direction']} with surprise risk skewed {scenario['inflation_surprise_label']}.{shock_text}"
 
 
 def _central_bank_response(scenario: dict[str, Any]) -> str:
-    return f"Central banks likely remain {scenario['central_bank_policy_stance'].replace('_', ' ')} initially; expected path: {scenario['expected_policy_path']}."
+    return f"Central banks likely remain {scenario['central_bank_stance']} with the Fed {scenario['fed_position']}; expected path: {scenario['expected_policy_path']}."
 
 
 def _market_consequence(cross_asset: list[dict[str, Any]]) -> str:
@@ -438,16 +1034,23 @@ def _market_consequence(cross_asset: list[dict[str, Any]]) -> str:
 
 
 def _confirming_indicators(scenario: dict[str, Any]) -> list[str]:
-    return [
+    indicators = [
         "Core CPI/PCE and inflation expectations continue to surprise higher.",
         "Payrolls, wages, and real activity data remain resilient.",
         "Fed communication stays patient relative to incoming inflation data.",
         "Commodity and breakeven signals confirm sticky nominal pressure.",
     ]
+    if scenario.get("credit_stress", 0) >= 6:
+        indicators.append("Credit spreads and lending standards confirm rising financing stress.")
+    if scenario.get("dollar_outlook") in {"moderately stronger", "sharply stronger"}:
+        indicators.append("DXY and cross-currency funding indicators confirm dollar pressure.")
+    if scenario.get("market_volatility") in {"high", "crisis"}:
+        indicators.append("VIX and equity drawdown signals confirm stress-window behavior.")
+    return indicators
 
 
 def _data_to_watch(scenario: dict[str, Any]) -> list[str]:
-    return [
+    items = [
         "CPI and core PCE inflation releases",
         "Payrolls, unemployment rate, and wage growth",
         "FOMC statement, dot plot, and press conference language",
@@ -455,12 +1058,17 @@ def _data_to_watch(scenario: dict[str, Any]) -> list[str]:
         "Oil, gold, and broad commodity indexes",
         "Credit spreads and financial conditions indexes",
     ]
+    if scenario.get("dollar_outlook") != "stable":
+        items.append("DXY, USD funding spreads, and major FX pairs")
+    if scenario.get("commodity_shock") != "none":
+        items.append(f"Supply indicators linked to {scenario['commodity_shock']}")
+    return items
 
 
 def _debate_summary(scenario: dict[str, Any], opportunities: list[dict[str, Any]], hedges: list[dict[str, Any]]) -> str:
     strongest = opportunities[0]["name"] if opportunities else "no single opportunity"
     weakest = "timing risk: the scenario can be directionally right but early."
-    hidden = "central banks may shift from delayed to abrupt tightening faster than the base case assumes."
+    hidden = f"selected stress inputs may dominate: recession {float(scenario['recession_probability']):.0%}, volatility {scenario['market_volatility']}, credit stress {scenario['credit_stress']}/10."
     hedge = hedges[0]["hedge_name"] if hedges else "no hedge identified"
     return (
         f"Consensus view: the scenario is internally consistent and most supportive of {strongest}. "
