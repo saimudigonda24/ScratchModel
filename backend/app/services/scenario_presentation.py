@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import re
+import uuid
 from datetime import datetime
 from typing import Any
 
 from app.connectors import ingest_all_sources
+from app.models.scenario_parser import ParsedScenario
 from app.services.database import save_investment_committee_report
+from app.services.ollama_provider import OllamaProvider
 from app.services.scenario_lab import (
     MacroScenario,
     create_or_update_scenario_sequence,
@@ -305,7 +311,55 @@ def scenario_input_options() -> dict[str, Any]:
     }
 
 
-def parse_free_text_scenario(text: str) -> dict[str, Any]:
+PARSER_STATUS = {
+    "mode": "Rule-Based Parser Fallback",
+    "latest_successful_parse": None,
+    "latest_parse_duration_ms": None,
+    "fallback_count": 0,
+    "latest_parser_error": None,
+}
+
+
+def parse_free_text_scenario(text: str, force_rule_fallback: bool = False) -> dict[str, Any]:
+    provider = os.getenv("HCP_SCENARIO_PARSER_PROVIDER", "ollama").lower()
+    if provider == "ollama" and not force_rule_fallback:
+        result = OllamaProvider().parse_scenario(text)
+        if result.ok and result.payload:
+            try:
+                parsed = _validated_parsed_scenario(result.payload, text, "ollama", result.model, result.duration_ms)
+                PARSER_STATUS.update(
+                    {
+                        "mode": "Local Scenario Parser — Connected",
+                        "latest_successful_parse": datetime.utcnow().isoformat(),
+                        "latest_parse_duration_ms": result.duration_ms,
+                        "latest_parser_error": None,
+                    }
+                )
+                return parsed.to_legacy_scenario()
+            except Exception as exc:
+                PARSER_STATUS["latest_parser_error"] = f"schema validation failed: {exc}"
+        else:
+            PARSER_STATUS["latest_parser_error"] = result.error
+    PARSER_STATUS["fallback_count"] = int(PARSER_STATUS.get("fallback_count", 0)) + 1
+    PARSER_STATUS["mode"] = "Rule-Based Parser Fallback"
+    parsed = _validated_parsed_scenario(rule_based_parse_free_text_scenario(text), text, "rule_fallback", "rule-based-parser", None)
+    return parsed.to_legacy_scenario()
+
+
+def ollama_parser_health() -> dict[str, Any]:
+    health = OllamaProvider().health()
+    mode = "Local Scenario Parser — Connected" if health["reachable"] and health["model_available"] else "Rule-Based Parser Fallback"
+    return {
+        **health,
+        "scenario_parser_mode": mode,
+        "latest_successful_parse": PARSER_STATUS.get("latest_successful_parse"),
+        "latest_parse_duration_ms": PARSER_STATUS.get("latest_parse_duration_ms"),
+        "fallback_count": PARSER_STATUS.get("fallback_count", 0),
+        "latest_parser_error": PARSER_STATUS.get("latest_parser_error") or health.get("error"),
+    }
+
+
+def rule_based_parse_free_text_scenario(text: str) -> dict[str, Any]:
     lower = text.lower()
     scenario = {
         "scenario_name": "Inflation Surprise / Fed Behind the Curve" if _behind_curve(lower) and _inflation_up(lower) else _title_from_text(text),
@@ -348,7 +402,7 @@ def parse_free_text_scenario(text: str) -> dict[str, Any]:
         "probability": 0.0,
     }
 
-    if any(term in lower for term in ["growth continues to grow", "economy continues to grow", "continues to grow, but at a slower", "grow, but at a slower", "slower pace than before"]):
+    if any(term in lower for term in ["growth continues to grow", "economy continues to grow", "continues to grow, but at a slower", "grow, but at a slower", "slower pace than before", "growth remains positive but slows", "growth weakens"]):
         scenario["growth_outlook"] = "slowing growth"
         confidence["growth_outlook"] = 0.9
     elif any(term in lower for term in ["growth remains strong", "strong growth"]):
@@ -357,7 +411,7 @@ def parse_free_text_scenario(text: str) -> dict[str, Any]:
     elif any(term in lower for term in ["growth accelerates", "accelerating growth"]):
         scenario["growth_outlook"] = "strong acceleration"
         confidence["growth_outlook"] = 0.85
-    elif any(term in lower for term in ["recession", "hard landing", "contraction", "downturn"]) and not any(term in lower for term in ["probability", "risk", "if the fed", "eventually"]):
+    elif any(term in lower for term in ["recession", "hard landing", "contraction", "downturn"]) and not any(term in lower for term in ["probability", "risk", "if the fed", "eventually", "mild recession"]):
         scenario["growth_outlook"] = "recession"
         confidence["growth_outlook"] = 0.75
 
@@ -400,7 +454,7 @@ def parse_free_text_scenario(text: str) -> dict[str, Any]:
         scenario["labor_market"] = "cooling"
         confidence["labor_market"] = 0.7
 
-    if any(term in lower for term in ["markets remain calm at first", "calm at first", "become more volatile", "more volatile as"]):
+    if any(term in lower for term in ["markets remain calm at first", "calm at first", "become more volatile", "more volatile as", "volatility rises later"]):
         scenario["market_volatility"] = "high"
         confidence["market_volatility"] = 0.85
     elif any(term in lower for term in ["volatility spike", "crisis", "panic"]):
@@ -415,7 +469,7 @@ def parse_free_text_scenario(text: str) -> dict[str, Any]:
         scenario["credit_stress"] = 3
         confidence["financial_conditions"] = 0.85
         confidence["credit_stress"] = 0.9
-    elif any(term in lower for term in ["credit spreads widen", "credit stress", "refinancing stress"]):
+    elif any(term in lower for term in ["credit spreads widen", "credit stress", "refinancing stress", "credit conditions tighten", "credit conditions tight"]):
         scenario["financial_conditions"] = "tight"
         scenario["credit_stress"] = 7
         confidence["financial_conditions"] = 0.75
@@ -431,11 +485,11 @@ def parse_free_text_scenario(text: str) -> dict[str, Any]:
     elif any(term in lower for term in ["dollar sharply stronger", "usd sharply stronger", "dollar squeeze"]):
         scenario["dollar_outlook"] = "sharply stronger"
         confidence["dollar_outlook"] = 0.85
-    elif any(term in lower for term in ["dollar weaker", "usd weaker"]):
+    elif any(term in lower for term in ["dollar weaker", "usd weaker", "dollar weakens", "usd weakens"]):
         scenario["dollar_outlook"] = "moderately weaker"
         confidence["dollar_outlook"] = 0.75
 
-    if any(term in lower for term in ["energy prices increase", "energy prices rise", "oil prices increase", "oil prices rise", "energy shock", "oil shock"]):
+    if any(term in lower for term in ["energy prices increase", "energy prices and wages increase", "energy prices rise", "oil prices increase", "oil prices rise", "energy shock", "oil shock"]):
         scenario["commodity_shock"] = "energy shock"
         confidence["commodity_shock"] = 0.95
     elif any(term in lower for term in ["commodity prices continue to increase", "commodity prices rise", "commodity pressure", "commodity shock"]):
@@ -464,9 +518,18 @@ def parse_free_text_scenario(text: str) -> dict[str, Any]:
     scenario["risks"] = _parsed_risks(scenario)
     scenario["invalidation_triggers"] = _parsed_invalidation_triggers(scenario)
     warnings = _contradiction_warnings(lower, scenario)
-    scenario["parser_confidence"] = confidence
+    scenario["parser_confidence"] = sum(confidence.values()) / len(confidence)
+    scenario["field_confidence"] = confidence
+    scenario["field_excerpts"] = _rule_field_excerpts(text, scenario)
     scenario["low_confidence_fields"] = [field for field, score in confidence.items() if score < 0.55]
+    scenario["contradiction_warnings"] = warnings
     scenario["parser_warnings"] = warnings
+    scenario["parser_provider"] = "rule_fallback"
+    scenario["parser_model"] = "rule-based-parser"
+    scenario["source_text"] = text
+    scenario["confirming_indicators"] = _confirming_indicators(scenario)
+    scenario["stated_probabilities"] = _extract_all_probabilities(lower)
+    scenario["phases"] = _rule_phases(lower)
     scenario["review_required"] = bool(warnings or scenario["low_confidence_fields"])
     return scenario
 
@@ -522,6 +585,9 @@ def safe_generate_presentation_outlook(
     demo: bool = False,
 ) -> dict[str, Any]:
     try:
+        validation_error = validate_confirmed_scenario(payload)
+        if validation_error:
+            return {"status": "not_ready", "reason": "stale_or_unconfirmed_scenario", "warnings": [validation_error], "report": None}
         return generate_presentation_outlook(
             payload,
             sequence_name=sequence_name,
@@ -536,6 +602,33 @@ def safe_generate_presentation_outlook(
             "warnings": [str(exc)],
             "report": None,
         }
+
+
+def validate_confirmed_scenario(scenario: dict[str, Any]) -> str | None:
+    scenario_id = scenario.get("scenario_id")
+    scenario_hash = scenario.get("scenario_hash")
+    confirmed_id = scenario.get("confirmed_scenario_id")
+    confirmed_hash = scenario.get("confirmed_scenario_hash")
+    if scenario_id or scenario_hash:
+        if not confirmed_id or not confirmed_hash:
+            return "Scenario analysis requires confirmed scenario ID and hash."
+        if confirmed_id != scenario_id:
+            return "Confirmed scenario ID does not match the current parsed scenario ID."
+        if confirmed_hash != scenario_hash:
+            return "Confirmed scenario hash does not match the current structured scenario."
+        current_hash = scenario_hash_for_payload(scenario)
+        if current_hash != scenario_hash:
+            return "Structured input changed after confirmation; re-confirm before analysis."
+    return None
+
+
+def confirm_structured_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
+    confirmed = dict(scenario)
+    confirmed["scenario_id"] = confirmed.get("scenario_id") or f"scenario_{uuid.uuid4().hex[:12]}"
+    confirmed["scenario_hash"] = scenario_hash_for_payload(confirmed)
+    confirmed["confirmed_scenario_id"] = confirmed["scenario_id"]
+    confirmed["confirmed_scenario_hash"] = confirmed["scenario_hash"]
+    return confirmed
 
 
 def build_presentation_outlook(
@@ -562,6 +655,8 @@ def build_presentation_outlook(
         "run_date": datetime.utcnow().isoformat(),
         "data_mode": data_mode_label(data_snapshot),
         "scenario_definition": {
+            "scenario_id": scenario.get("scenario_id"),
+            "scenario_hash": scenario.get("scenario_hash"),
             "name": scenario["scenario_name"],
             "description": scenario.get("scenario_description", ""),
             "growth_outlook": scenario["growth_outlook"],
@@ -582,6 +677,10 @@ def build_presentation_outlook(
             "custom_assumptions": scenario.get("custom_assumptions", ""),
             "risks": scenario.get("risks", []),
             "invalidation_triggers": scenario.get("invalidation_triggers", []),
+            "parser_provider": scenario.get("parser_provider"),
+            "parser_model": scenario.get("parser_model"),
+            "phases": scenario.get("phases", []),
+            "stated_probabilities": scenario.get("stated_probabilities", {}),
         },
         "executive_outlook": _executive_outlook(scenario, opportunities, hedges),
         "base_case": {
@@ -738,6 +837,9 @@ def _normalize_scenario(scenario: dict[str, Any], demo: bool = False) -> dict[st
     payload["equity_valuation"] = _choice(merged, "equity_valuation", default="fair")
     payload["custom_assumptions"] = merged.get("custom_assumptions", "")
     payload["scenario_description"] = merged.get("scenario_description", "")
+    payload["scenario_id"] = merged.get("scenario_id")
+    payload["scenario_hash"] = merged.get("scenario_hash")
+    payload["source_text"] = merged.get("source_text")
     payload["countries_or_regions"] = _as_list(merged.get("countries_or_regions", ["United States"]))
     payload["risks"] = _as_list(merged.get("risks", []))
     payload["probability"] = scenario_probability
@@ -745,6 +847,9 @@ def _normalize_scenario(scenario: dict[str, Any], demo: bool = False) -> dict[st
     payload["low_confidence_fields"] = _as_list(merged.get("low_confidence_fields", []))
     payload["parser_warnings"] = _as_list(merged.get("parser_warnings", []))
     payload["review_required"] = bool(merged.get("review_required", False))
+    payload["field_excerpts"] = merged.get("field_excerpts", {})
+    payload["stated_probabilities"] = merged.get("stated_probabilities", {})
+    payload["phases"] = merged.get("phases", [])
     return payload
 
 
@@ -992,6 +1097,105 @@ def _as_list(value: Any) -> list[str]:
     return [str(value)]
 
 
+def scenario_hash_for_payload(payload: dict[str, Any]) -> str:
+    excluded = {
+        "scenario_hash",
+        "confirmed_scenario_id",
+        "confirmed_scenario_hash",
+        "parser_warnings",
+        "review_required",
+        "parse_duration_ms",
+    }
+    canonical = {key: value for key, value in payload.items() if key not in excluded}
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+
+
+def _validated_parsed_scenario(payload: dict[str, Any], source_text: str, provider: str, model: str | None, duration_ms: int | None) -> ParsedScenario:
+    cleaned = _clean_llm_payload(payload, source_text)
+    cleaned["scenario_id"] = cleaned.get("scenario_id") or f"scenario_{uuid.uuid4().hex[:12]}"
+    cleaned["source_text"] = source_text
+    cleaned["parser_provider"] = provider
+    cleaned["parser_model"] = model
+    cleaned["parse_duration_ms"] = duration_ms
+    if not cleaned.get("field_confidence") and isinstance(cleaned.get("parser_confidence"), dict):
+        cleaned["field_confidence"] = cleaned["parser_confidence"]
+    else:
+        cleaned["field_confidence"] = cleaned.get("field_confidence", {})
+    if isinstance(cleaned.get("parser_confidence"), dict):
+        values = list(cleaned["parser_confidence"].values())
+        cleaned["parser_confidence"] = sum(values) / len(values) if values else 0.5
+    cleaned["parser_confidence"] = float(cleaned.get("parser_confidence") or 0.65)
+    cleaned["low_confidence_fields"] = [
+        field for field, score in (cleaned.get("field_confidence") or {}).items() if isinstance(score, (int, float)) and score < 0.55
+    ]
+    cleaned["contradiction_warnings"] = list(dict.fromkeys((cleaned.get("contradiction_warnings") or []) + _contradiction_warnings(source_text.lower(), cleaned)))
+    cleaned["scenario_hash"] = scenario_hash_for_payload(cleaned)
+    return ParsedScenario(**cleaned)
+
+
+def _clean_llm_payload(payload: dict[str, Any], source_text: str) -> dict[str, Any]:
+    fallback = rule_based_parse_free_text_scenario(source_text)
+    cleaned = {**fallback, **{key: value for key, value in payload.items() if value is not None}}
+    if "countries_or_regions" in cleaned and "countries" not in cleaned:
+        cleaned["countries"] = cleaned["countries_or_regions"]
+    cleaned.setdefault("countries", ["U.S."])
+    cleaned.setdefault("custom_regions", [])
+    cleaned.setdefault("risks", fallback.get("risks", []))
+    cleaned.setdefault("invalidation_triggers", fallback.get("invalidation_triggers", []))
+    cleaned.setdefault("confirming_indicators", fallback.get("confirming_indicators", []))
+    cleaned.setdefault("stated_probabilities", fallback.get("stated_probabilities", {}))
+    cleaned.setdefault("field_excerpts", fallback.get("field_excerpts", {}))
+    cleaned.setdefault("phases", fallback.get("phases", []))
+    return cleaned
+
+
+def _extract_all_probabilities(text: str) -> dict[str, float]:
+    results: dict[str, float] = {}
+    for match in re.finditer(r"([a-zA-Z][a-zA-Z /_-]{1,50}?)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*%", text):
+        label = _probability_label(match.group(1))
+        if label:
+            results[label] = float(match.group(2)) / 100
+    recession = _extract_percentage_near(text, ["recession", "falls into recession", "recession if"])
+    if recession is not None and not results:
+        results["recession"] = recession
+    return results
+
+
+def _probability_label(value: str) -> str:
+    label = value.strip(" .,:;-").lower().replace(" ", "_").replace("/", "_").replace("-", "_")
+    stop_words = {"assume_there_is_a", "there_is_a", "probability_that_the_economy_eventually_falls_into_recession_if_the_fed_has_to_tighten_policy_aggressively_later"}
+    if not label or label in stop_words or len(label) > 40:
+        return ""
+    return label
+
+
+def _rule_field_excerpts(text: str, scenario: dict[str, Any]) -> dict[str, str]:
+    sentences = [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", text) if sentence.strip()]
+    fields = {
+        "growth_outlook": ["grow", "growth", "economy"],
+        "inflation_direction": ["inflation", "energy", "wage"],
+        "central_bank_stance": ["federal reserve", "fed", "interest rates"],
+        "market_volatility": ["volatile", "volatility", "calm"],
+        "credit_stress": ["credit spreads"],
+        "dollar_outlook": ["dollar"],
+        "commodity_shock": ["energy", "commodity", "oil"],
+        "labor_market": ["unemployment", "wage"],
+    }
+    excerpts = {}
+    for field, terms in fields.items():
+        excerpts[field] = next((sentence for sentence in sentences if any(term in sentence.lower() for term in terms)), "")
+    return excerpts
+
+
+def _rule_phases(text: str) -> list[dict[str, Any]]:
+    if any(term in text for term in ["calm at first", "initially", "later", "then become more volatile", "volatility rises later"]):
+        return [
+            {"name": "Initial phase", "market_volatility": "normal", "supporting_excerpt": "Markets remain calm at first."},
+            {"name": "Later phase", "market_volatility": "high", "supporting_excerpt": "Volatility rises later as policy concern builds."},
+        ]
+    return []
+
+
 def _inflation_up(text: str) -> bool:
     return any(
         term in text
@@ -1004,6 +1208,7 @@ def _inflation_up(text: str) -> bool:
             "inflation will be higher",
             "sticky inflation",
             "energy prices increase",
+            "energy prices and wages increase",
             "energy prices rise",
             "commodity prices continue to increase",
         ]

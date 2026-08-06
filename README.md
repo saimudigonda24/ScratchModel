@@ -107,14 +107,63 @@ OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 GOOGLE_API_KEY=
 FRED_API_KEY=
-TRADING_ECONOMICS_API_KEY=
+BLS_API_KEY=
+BEA_API_KEY=
+CENSUS_API_KEY=
 SEC_USER_AGENT="Heritage Capital Partners research contact@example.com"
 HCP_API_URL=http://localhost:8000
 HCP_USE_REAL_DATA=false
+HCP_USE_REAL_LLM=false
+HCP_SCENARIO_PARSER_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_SCENARIO_MODEL=llama3.1:8b
 ```
 
-No key should be hardcoded. If keys are missing, the app still runs with mock
-LLM answers and mock data.
+No key should be hardcoded. Paid LLM calls are disabled by default with
+`HCP_USE_REAL_LLM=false`. The Scenario Lab parser uses local Ollama when
+available and falls back to the rule-based parser when Ollama is unavailable.
+
+## Local Scenario Parser With Ollama
+
+Install Ollama from `https://ollama.com`, then start it locally:
+
+```bash
+ollama serve
+```
+
+Download the selected model:
+
+```bash
+ollama pull llama3.1:8b
+```
+
+Verify the local server:
+
+```bash
+curl http://localhost:11434/api/tags
+```
+
+Scenario parsing flow:
+
+```text
+Plain-English Scenario
+  -> Local Ollama Model
+  -> Strict Structured JSON
+  -> Pydantic Schema Validation
+  -> Contradiction Checks
+  -> User Review and Confirmation
+  -> Scenario Outlook Generation
+```
+
+The parser model only extracts scenario assumptions. It does not generate
+investment recommendations. The investment reasoning engine receives only the
+confirmed validated structured JSON plus the scenario ID/hash. The original
+English text is stored for audit provenance and should not override confirmed
+fields.
+
+If Ollama is unreachable, the dashboard shows `Rule-Based Parser Fallback`.
+Fallback parses still require the same review and confirmation workflow before
+an outlook can be generated.
 
 ## Run With Mock Data
 

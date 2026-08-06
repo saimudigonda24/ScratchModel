@@ -27,6 +27,10 @@ def test_system_monitor_smoke_layout_sections_present():
     assert "FRED Connection" in source
     assert "Data Sources & Model Providers" in source
     assert "Scenario Comparison Readiness" in source
+    assert "Local Scenario Parser" in source
+    assert "Use Rule-Based Fallback" in source
+    assert "Reparse Scenario" in source
+    assert "Use Parsed Values" in source
     assert "Training & Evaluation Controls" in source
     assert "format_dashboard_timestamp" in source
     assert "✓ Connected" in source

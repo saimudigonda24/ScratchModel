@@ -62,6 +62,7 @@ def refresh_artifacts() -> None:
     st.session_state.ic_reports = api_get("/investment-committee/reports", [])
     st.session_state.scenario_lab = api_get("/scenario-lab", {})
     st.session_state.scenario_options = api_get("/scenario-lab/options", {"presets": {}})
+    st.session_state.scenario_parser_health = api_get("/scenario-lab/parser-health", {})
     st.session_state.regimes = api_get("/regimes", [])
     st.session_state.backtests = api_get("/backtests/historical", [])
     st.session_state.lessons = api_get("/memory/lessons", {})
@@ -392,7 +393,25 @@ with tabs[0]:
                 st.session_state.scenario_builder = parsed["scenario"]
                 st.session_state.scenario_parse_pending = True
                 st.session_state.scenario_assumptions_confirmed = False
+                st.session_state.scenario_outlook = {}
                 st.success("Scenario parsed. Review and edit the extracted fields below.")
+        cols = st.columns(2)
+        if cols[0].button("Reparse Scenario", use_container_width=True):
+            parsed = api_post("/scenario-lab/parse", {"text": scenario_text}, {})
+            if parsed.get("scenario"):
+                st.session_state.scenario_builder = parsed["scenario"]
+                st.session_state.scenario_parse_pending = True
+                st.session_state.scenario_assumptions_confirmed = False
+                st.session_state.scenario_outlook = {}
+                st.rerun()
+        if cols[1].button("Use Rule-Based Fallback", use_container_width=True):
+            parsed = api_post("/scenario-lab/parse", {"text": scenario_text, "force_rule_fallback": True}, {})
+            if parsed.get("scenario"):
+                st.session_state.scenario_builder = parsed["scenario"]
+                st.session_state.scenario_parse_pending = True
+                st.session_state.scenario_assumptions_confirmed = False
+                st.session_state.scenario_outlook = {}
+                st.warning("Rule-based fallback parser used. Review required before analysis.")
         st.caption("The parser is rule-based for the demo. You can edit every extracted field before analysis.")
 
     with input_tabs[1]:
@@ -412,11 +431,14 @@ with tabs[0]:
     st.session_state.scenario_builder = editor["scenario"]
     summary = api_post("/scenario-lab/summary", {"scenario": st.session_state.scenario_builder}, {"summary": {}})
     st.markdown("**Pre-Analysis Summary**")
+    if st.session_state.scenario_builder.get("scenario_id"):
+        st.caption(f"Scenario ID: {st.session_state.scenario_builder.get('scenario_id')} | Hash: {st.session_state.scenario_builder.get('scenario_hash')}")
     summary_rows = [{"assumption": key, "value": value} for key, value in summary.get("summary", {}).items()]
     table(summary_rows, ["assumption", "value"], "No scenario summary available yet.")
     parser_warnings = st.session_state.scenario_builder.get("parser_warnings", [])
     low_confidence = st.session_state.scenario_builder.get("low_confidence_fields", [])
-    confidence = st.session_state.scenario_builder.get("parser_confidence", {})
+    confidence = st.session_state.scenario_builder.get("field_confidence") or st.session_state.scenario_builder.get("parser_confidence", {})
+    excerpts = st.session_state.scenario_builder.get("field_excerpts", {})
     if parser_warnings:
         for warning in parser_warnings:
             st.warning(warning)
@@ -424,15 +446,21 @@ with tabs[0]:
         st.info("Low-confidence parsed fields: " + ", ".join(low_confidence))
     if confidence:
         confidence_rows = [
-            {"field": field, "confidence": f"{score:.0%}", "review": "low" if score < 0.55 else "ok"}
+            {"field": field, "confidence": f"{score:.0%}", "excerpt": excerpts.get(field, ""), "review": "low" if score < 0.55 else "ok"}
             for field, score in confidence.items()
         ]
-        table(confidence_rows, ["field", "confidence", "review"], "No parser confidence metadata available.")
+        table(confidence_rows, ["field", "confidence", "excerpt", "review"], "No parser confidence metadata available.")
+    if st.session_state.scenario_builder.get("phases"):
+        st.markdown("**Parsed Phases**")
+        table(st.session_state.scenario_builder.get("phases", []), None, "No phases detected.")
     confirm_cols = st.columns(2)
     if confirm_cols[0].button("Use Parsed Values", use_container_width=True):
-        st.session_state.scenario_assumptions_confirmed = True
-        st.session_state.scenario_parse_pending = False
-        st.success("Parsed assumptions confirmed for analysis.")
+        confirmed = api_post("/scenario-lab/confirm", {"scenario": st.session_state.scenario_builder}, {})
+        if confirmed.get("scenario"):
+            st.session_state.scenario_builder = confirmed["scenario"]
+            st.session_state.scenario_assumptions_confirmed = True
+            st.session_state.scenario_parse_pending = False
+            st.success(f"Parsed assumptions confirmed for analysis. Scenario ID: {st.session_state.scenario_builder.get('scenario_id')}")
     if confirm_cols[1].button("Edit Before Analysis", use_container_width=True):
         st.session_state.scenario_assumptions_confirmed = False
         st.session_state.scenario_parse_pending = True
@@ -657,6 +685,22 @@ with tabs[7]:
         st.success(message.replace("Live Data Mode - FRED connected", "Live Data Mode — FRED connected"))
     else:
         st.warning(message)
+
+    st.subheader("Local Scenario Parser")
+    parser_health = st.session_state.get("scenario_parser_health", {})
+    parser_mode = parser_health.get("scenario_parser_mode", "Rule-Based Parser Fallback")
+    if parser_mode.startswith("Local Scenario Parser"):
+        st.success("Local Scenario Parser — Connected")
+    else:
+        st.warning("Rule-Based Parser Fallback")
+    p1, p2, p3, p4 = st.columns(4)
+    p1.metric("Ollama Reachable", "yes" if parser_health.get("reachable") else "no")
+    p2.metric("Selected Model", parser_health.get("selected_model", "llama3.1:8b"))
+    p3.metric("Latest Parse", format_dashboard_timestamp(parser_health.get("latest_successful_parse")))
+    p4.metric("Fallback Count", parser_health.get("fallback_count", 0))
+    st.caption(f"Latest parse duration: {parser_health.get('latest_parse_duration_ms') or 'n/a'} ms")
+    if parser_health.get("latest_parser_error"):
+        st.caption(f"Latest parser error: {parser_health.get('latest_parser_error')}")
 
     st.subheader("Data Sources & Model Providers")
     audit = st.session_state.get("source_audit", {"records": [], "comparison_readiness": {}})

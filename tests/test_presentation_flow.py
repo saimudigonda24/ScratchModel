@@ -1,6 +1,7 @@
 from app.services.database import list_investment_committee_reports
 from app.services.scenario_presentation import (
     DEMO_SCENARIO,
+    confirm_structured_scenario,
     data_mode_label,
     generate_presentation_outlook,
     outlook_to_markdown,
@@ -8,7 +9,9 @@ from app.services.scenario_presentation import (
     safe_generate_presentation_outlook,
     scenario_input_options,
     scenario_summary,
+    validate_confirmed_scenario,
 )
+from app.services.ollama_provider import OllamaParseResult
 
 
 MANAGER_SCENARIO = (
@@ -19,6 +22,17 @@ MANAGER_SCENARIO = (
     "Equity markets remain positive early in the year but become more volatile as expectations for higher interest rates grow. "
     "Credit spreads stay relatively contained, and unemployment remains low. Assume there is a 30% probability that the economy eventually "
     "falls into recession if the Fed has to tighten policy aggressively later."
+)
+
+SCENARIO_A = (
+    "Inflation rises again because energy prices and wages increase, growth remains positive but slows, "
+    "the Fed delays tightening, unemployment remains low, the dollar strengthens, and volatility rises later."
+)
+
+SCENARIO_B = (
+    "Inflation cools, growth weakens, unemployment rises, credit conditions tighten, the Fed cuts earlier and faster, "
+    "Treasury yields fall, the dollar weakens, defensive equities outperform, high yield underperforms, and gold benefits. "
+    "Mild recession: 45%, soft landing: 35%, deep downturn: 20%."
 )
 
 
@@ -81,7 +95,7 @@ def test_investment_committee_report_retrieval(monkeypatch):
     monkeypatch.setattr("app.services.scenario_presentation.ingest_all_sources", lambda: FakeSnapshot())
     outlook = generate_presentation_outlook(DEMO_SCENARIO, sequence_name="IC Retrieval Test", demo=True)
 
-    reports = list_investment_committee_reports()
+    reports = list_investment_committee_reports(limit=500)
 
     matching = [row for row in reports if row["run_id"] == outlook["run_id"]]
     assert matching
@@ -127,7 +141,7 @@ def test_free_text_scenario_parsing_extracts_assumptions():
 
 
 def test_manager_scenario_parses_as_inflation_surprise_behind_curve():
-    parsed = parse_free_text_scenario(MANAGER_SCENARIO)
+    parsed = parse_free_text_scenario(MANAGER_SCENARIO, force_rule_fallback=True)
 
     assert parsed["scenario_name"] == "Inflation Surprise / Fed Behind the Curve"
     assert parsed["growth_outlook"] in {"moderate growth", "slowing growth"}
@@ -145,12 +159,12 @@ def test_manager_scenario_parses_as_inflation_surprise_behind_curve():
     assert parsed["time_horizon"] == "6-12 months"
     assert parsed["recession_probability"] == 0.30
     assert parsed["probability"] is None
-    assert parsed["parser_confidence"]["recession_probability"] == 1.0
+    assert parsed["field_confidence"]["recession_probability"] == 1.0
     assert not parsed["parser_warnings"]
 
 
 def test_explicit_percentage_preserved_without_invented_scenario_probability():
-    parsed = parse_free_text_scenario("Assume a 30% probability that the economy falls into recession.")
+    parsed = parse_free_text_scenario("Assume a 30% probability that the economy falls into recession.", force_rule_fallback=True)
 
     assert parsed["recession_probability"] == 0.30
     assert parsed["probability"] is None
@@ -158,36 +172,134 @@ def test_explicit_percentage_preserved_without_invented_scenario_probability():
 
 
 def test_phased_volatility_language_is_high_not_crisis():
-    parsed = parse_free_text_scenario("Markets remain calm at first, then become more volatile as rates rise.")
+    parsed = parse_free_text_scenario("Markets remain calm at first, then become more volatile as rates rise.", force_rule_fallback=True)
 
     assert parsed["market_volatility"] == "high"
+    assert parsed["phases"][0]["market_volatility"] == "normal"
+    assert parsed["phases"][1]["market_volatility"] == "high"
 
 
 def test_slowing_but_positive_growth_is_not_recession():
-    parsed = parse_free_text_scenario("The U.S. economy continues to grow, but at a slower pace than before.")
+    parsed = parse_free_text_scenario("The U.S. economy continues to grow, but at a slower pace than before.", force_rule_fallback=True)
 
     assert parsed["growth_outlook"] == "slowing growth"
 
 
 def test_contained_credit_spreads_are_not_severe_stress():
-    parsed = parse_free_text_scenario("Credit spreads stay relatively contained.")
+    parsed = parse_free_text_scenario("Credit spreads stay relatively contained.", force_rule_fallback=True)
 
     assert parsed["financial_conditions"] == "neutral"
     assert parsed["credit_stress"] == 3
 
 
 def test_energy_driven_inflation_sets_energy_shock():
-    parsed = parse_free_text_scenario("Inflation begins to rise again because energy prices increase.")
+    parsed = parse_free_text_scenario("Inflation begins to rise again because energy prices increase.", force_rule_fallback=True)
 
     assert parsed["inflation_direction"] == "moderately higher"
     assert parsed["commodity_shock"] == "energy shock"
 
 
 def test_behind_curve_is_not_overtightening():
-    parsed = parse_free_text_scenario("The Fed believes inflation is temporary and delays raising interest rates, falling behind the curve.")
+    parsed = parse_free_text_scenario("The Fed believes inflation is temporary and delays raising interest rates, falling behind the curve.", force_rule_fallback=True)
 
     assert parsed["fed_position"] == "behind the curve"
     assert parsed["central_bank_stance"] == "gradually tightening"
+
+
+def test_ollama_parser_accepts_valid_structured_json(monkeypatch):
+    payload = {
+        "scenario_name": "Local Parsed Scenario A",
+        "scenario_description": SCENARIO_A,
+        "growth_outlook": "slowing growth",
+        "inflation_direction": "moderately higher",
+        "inflation_surprise": "small upside surprise",
+        "central_bank_stance": "gradually tightening",
+        "expected_policy_path": "The Fed delays tightening.",
+        "fed_position": "behind the curve",
+        "labor_market": "strong",
+        "financial_conditions": "neutral",
+        "market_volatility": "high",
+        "credit_stress": 3,
+        "dollar_outlook": "moderately stronger",
+        "commodity_shock": "energy shock",
+        "equity_valuation": "fair",
+        "time_horizon": "7-14 months",
+        "countries": ["U.S."],
+        "custom_regions": [],
+        "risks": ["Fed falls behind the curve."],
+        "invalidation_triggers": ["Energy prices fall."],
+        "confirming_indicators": ["Energy and wages rise."],
+        "stated_probabilities": {},
+        "parser_confidence": 0.88,
+        "field_confidence": {"growth_outlook": 0.9},
+        "field_excerpts": {"growth_outlook": "growth remains positive but slows"},
+        "contradiction_warnings": [],
+        "phases": [
+            {"name": "Initial phase", "market_volatility": "normal"},
+            {"name": "Later phase", "market_volatility": "high"},
+        ],
+    }
+    monkeypatch.setenv("HCP_SCENARIO_PARSER_PROVIDER", "ollama")
+    monkeypatch.setattr(
+        "app.services.scenario_presentation.OllamaProvider.parse_scenario",
+        lambda self, text: OllamaParseResult(True, payload, "llama3.1:8b", 120, None),
+    )
+
+    parsed = parse_free_text_scenario(SCENARIO_A)
+
+    assert parsed["parser_provider"] == "ollama"
+    assert parsed["parser_model"] == "llama3.1:8b"
+    assert parsed["growth_outlook"] == "slowing growth"
+    assert parsed["phases"][1]["market_volatility"] == "high"
+
+
+def test_ollama_unavailable_falls_back_with_provenance(monkeypatch):
+    monkeypatch.setenv("HCP_SCENARIO_PARSER_PROVIDER", "ollama")
+    monkeypatch.setattr(
+        "app.services.scenario_presentation.OllamaProvider.parse_scenario",
+        lambda self, text: OllamaParseResult(False, None, "llama3.1:8b", 50, "connection refused"),
+    )
+
+    parsed = parse_free_text_scenario(SCENARIO_A)
+
+    assert parsed["parser_provider"] == "rule_fallback"
+    assert parsed["growth_outlook"] == "slowing growth"
+
+
+def test_regression_scenario_a_core_fields():
+    parsed = parse_free_text_scenario(SCENARIO_A, force_rule_fallback=True)
+
+    assert parsed["growth_outlook"] == "slowing growth"
+    assert parsed["inflation_direction"] == "moderately higher"
+    assert parsed["inflation_surprise"] == "small upside surprise"
+    assert parsed["labor_market"] == "strong"
+    assert parsed["fed_position"] == "behind the curve"
+    assert parsed["commodity_shock"] == "energy shock"
+    assert parsed["dollar_outlook"] == "moderately stronger"
+    assert parsed["phases"][0]["market_volatility"] == "normal"
+    assert parsed["phases"][1]["market_volatility"] == "high"
+
+
+def test_regression_scenario_b_core_fields_and_probabilities():
+    parsed = parse_free_text_scenario(SCENARIO_B, force_rule_fallback=True)
+
+    assert parsed["growth_outlook"] == "slowing growth"
+    assert parsed["inflation_direction"] == "disinflation"
+    assert parsed["labor_market"] in {"cooling", "weak"}
+    assert parsed["financial_conditions"] == "tight"
+    assert parsed["central_bank_stance"] == "gradually easing"
+    assert parsed["dollar_outlook"] == "moderately weaker"
+    assert parsed["commodity_shock"] == "none"
+    assert parsed["stated_probabilities"] == {"mild_recession": 0.45, "soft_landing": 0.35, "deep_downturn": 0.2}
+
+
+def test_confirmation_hash_rejects_stale_state():
+    parsed = parse_free_text_scenario(SCENARIO_A, force_rule_fallback=True)
+    confirmed = confirm_structured_scenario(parsed)
+    assert validate_confirmed_scenario(confirmed) is None
+
+    tampered = {**confirmed, "growth_outlook": "recession"}
+    assert "changed after confirmation" in validate_confirmed_scenario(tampered)
 
 
 def test_presets_expose_expected_defaults():

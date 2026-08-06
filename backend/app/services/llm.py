@@ -10,7 +10,7 @@ load_env()
 
 
 def real_llm_enabled() -> bool:
-    return os.getenv("HCP_USE_REAL_LLM", "true").lower() == "true"
+    return os.getenv("HCP_USE_REAL_LLM", "false").lower() == "true"
 
 
 def safe_llm_error(exc: Exception) -> str:

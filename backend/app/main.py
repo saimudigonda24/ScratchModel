@@ -49,7 +49,9 @@ from app.services.scenario_lab import (
 )
 from app.services.scenario_presentation import (
     DEMO_SCENARIO,
+    confirm_structured_scenario,
     generate_presentation_outlook,
+    ollama_parser_health,
     parse_free_text_scenario,
     safe_generate_presentation_outlook,
     scenario_input_options,
@@ -351,14 +353,25 @@ def scenario_lab_options() -> dict:
 
 @app.post("/scenario-lab/parse")
 def scenario_lab_parse(payload: dict) -> dict:
-    scenario = parse_free_text_scenario(payload.get("text", ""))
+    scenario = parse_free_text_scenario(payload.get("text", ""), force_rule_fallback=bool(payload.get("force_rule_fallback", False)))
     return {"status": "ok", "scenario": scenario, "summary": scenario_summary(scenario)}
+
+
+@app.get("/scenario-lab/parser-health")
+def scenario_lab_parser_health() -> dict:
+    return ollama_parser_health()
 
 
 @app.post("/scenario-lab/summary")
 def scenario_lab_summary(payload: dict) -> dict:
     scenario = payload.get("scenario", payload)
     return {"status": "ok", "summary": scenario_summary(scenario)}
+
+
+@app.post("/scenario-lab/confirm")
+def scenario_lab_confirm(payload: dict) -> dict:
+    scenario = confirm_structured_scenario(payload.get("scenario", payload))
+    return {"status": "ok", "scenario": scenario, "summary": scenario_summary(scenario)}
 
 
 @app.post("/scenario-lab/outlook")

@@ -5,7 +5,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.connectors.fred import FREDConnector
-from app.services.llm import OpenAIClient
 from app.services import source_status
 from app.services.source_status import audit_sources, scenario_comparison_readiness, test_source as run_source_test
 
@@ -72,17 +71,16 @@ def test_source_audit_does_not_leak_secret_values(monkeypatch, tmp_path):
         assert value not in rendered
 
 
-def test_openai_configured_is_connected_by_default(monkeypatch, tmp_path):
+def test_openai_configured_remains_fallback_by_default(monkeypatch, tmp_path):
     isolate_source_files(monkeypatch, tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "secret-openai-value")
     monkeypatch.delenv("HCP_USE_REAL_LLM", raising=False)
-    monkeypatch.setattr(OpenAIClient, "is_available", lambda self: True)
 
     audit = audit_sources(test_connections=False)
     openai = record_named(audit, "OpenAI")
 
-    assert openai["mode"] == "Connected"
-    assert openai["reachable"] is True
+    assert openai["mode"] == "Fallback"
+    assert openai["reachable"] is False
     assert "secret-openai-value" not in str(openai)
 
 
