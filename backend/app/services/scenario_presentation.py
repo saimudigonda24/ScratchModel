@@ -10,7 +10,7 @@ from typing import Any
 
 from app.connectors import ingest_all_sources
 from app.models.scenario_parser import ParsedScenario
-from app.services.database import save_investment_committee_report
+from app.services.database import list_investment_committee_reports, save_investment_committee_report
 from app.services.ollama_provider import OllamaProvider
 from app.services.scenario_lab import (
     MacroScenario,
@@ -54,10 +54,15 @@ DEMO_SCENARIO = {
 
 PROXY_MAP = {
     "Energy and commodity producers": ("XLE", "SPY"),
+    "Defense and aerospace beneficiaries": ("ITA", "SPY"),
+    "Infrastructure and industrial capex beneficiaries": ("PAVE", "SPY"),
+    "Industrial metals producers": ("XME", "SPY"),
     "TIPS breakeven exposure": ("TIP", "IEF"),
     "Gold": ("GLD", "SPY"),
+    "Two-stage gold hedge": ("GLD", "BIL"),
     "Long-duration nominal bonds": ("TLT", "IEF"),
     "US dollar": ("UUP", "BIL"),
+    "Long US dollar": ("UUP", "BIL"),
     "Value over growth": ("VLUE", "SPY"),
     "Quality balance-sheet equities": ("QUAL", "SPY"),
     "High-yield credit": ("HYG", "IEF"),
@@ -67,9 +72,10 @@ PROXY_MAP = {
     "Small caps": ("IWM", "SPY"),
     "Short high-yield credit / own quality credit": ("HYG", "LQD"),
     "Long equity volatility": ("VIXY", "SPY"),
-    "Long US dollar": ("UUP", "BIL"),
     "Commodity shock basket": ("DBC", "SPY"),
     "Defensive cash / T-bills": ("BIL", "SPY"),
+    "Underweight long-duration technology": ("QQQ", "SPY"),
+    "Underweight REITs": ("VNQ", "SPY"),
 }
 
 GROWTH_OPTIONS = ["strong acceleration", "moderate growth", "slowing growth", "stagnation", "recession"]
@@ -644,12 +650,19 @@ def build_presentation_outlook(
     scenario = phase["scenario"]
     top_recs = _dedupe_recommendations(recommendations.get("ranked_recommendations", []))
     top_recs = _dedupe_recommendations(_scenario_specific_recommendations(scenario) + top_recs)
-    opportunities = [_opportunity_row(row) for row in top_recs if row.get("category") != "hedge"][:6]
+    opportunities = [_opportunity_row(row, scenario, rank=index) for index, row in enumerate([row for row in top_recs if row.get("category") not in {"hedge", "avoid"}][:8], start=1)]
     hedges = [_hedge_row(row, scenario) for row in top_recs if row.get("category") == "hedge"]
     if not hedges:
         hedges = [_fallback_hedge(scenario)]
 
     cross_asset = _cross_asset_outlook(scenario, top_recs)
+    probabilities = _probability_detail(scenario)
+    underweights = _underweights_to_avoid(scenario, top_recs)
+    traceability = _traceability_map(scenario, data_snapshot, analogs, opportunities)
+    confirming = _structured_confirming_indicators(scenario)
+    invalidating = _structured_invalidating_indicators(scenario)
+    risk_register = _risk_register(scenario, hedges)
+    prior_report = _prior_report_comparison(scenario)
     outlook = {
         "status": "ok",
         "demo": demo,
@@ -685,6 +698,8 @@ def build_presentation_outlook(
             "stated_probabilities": scenario.get("stated_probabilities", {}),
         },
         "executive_outlook": _executive_outlook(scenario, opportunities, hedges),
+        "macro_thesis": _macro_thesis(scenario, cross_asset),
+        "scenario_probabilities": probabilities,
         "base_case": {
             "probability": _case_probabilities(scenario)["base"],
             "growth_path": _growth_path(scenario),
@@ -705,14 +720,21 @@ def build_presentation_outlook(
         },
         "cross_asset_outlook": cross_asset,
         "top_opportunities": opportunities,
+        "underweights_to_avoid": underweights,
         "recommended_hedges": hedges,
         "historical_analogs": _analog_rows(analogs, performance),
+        "central_bank_analysis": _central_bank_analysis(scenario),
+        "country_regional_views": _country_regional_views(scenario),
+        "risk_register": risk_register,
         "what_would_change_the_view": {
-            "confirming_indicators": _confirming_indicators(scenario),
-            "invalidating_indicators": scenario.get("invalidation_triggers", []),
+            "confirming_indicators": confirming,
+            "invalidating_indicators": invalidating,
         },
         "data_to_watch_next": _data_to_watch(scenario),
         "debate_summary": _debate_summary(scenario, opportunities, hedges),
+        "traceability": traceability,
+        "changes_since_last_report": prior_report,
+        "decisions_for_investment_committee": _investment_committee_decisions(scenario, opportunities, underweights, hedges),
         "approval_status": {
             "approved_content": [],
             "pending_content": [item["name"] for item in opportunities] + [item["hedge_name"] for item in hedges],
@@ -751,41 +773,65 @@ def outlook_to_markdown(outlook: dict[str, Any]) -> str:
         "## Scenario Definition",
         _bullet_dict(scenario),
         "",
+        "## Probability Framework",
+        _probability_markdown(outlook["scenario_probabilities"]),
+        "",
+        "## Macro Thesis",
+        _bullet_dict(outlook["macro_thesis"]),
+        "",
         "## Macro Outlook",
         _bullet_dict(outlook["base_case"]),
         "",
+        "## Base Case / Bull Case / Bear-Tail Case",
+        _case_markdown(outlook),
+        "",
         "## Central Bank Outlook",
-        str(outlook["base_case"]["central_bank_response"]),
+        _bullet_dict(outlook["central_bank_analysis"]),
+        "",
+        "## Country and Regional Views",
+        _table(outlook["country_regional_views"], ["region", "growth_outlook", "inflation_outlook", "central_bank_path", "currency_implication", "equity_implication", "bond_implication", "commodity_sensitivity", "major_risk"]),
         "",
         "## Historical Analogs",
-        _table(outlook["historical_analogs"], ["period", "similarity_score", "why_it_matters", "why_it_may_fail"]),
+        _table(outlook["historical_analogs"], ["period", "similarity_score", "matching_conditions", "major_differences", "subsequent_asset_performance", "why_it_matters", "why_it_may_fail", "supports_or_contradicts"]),
         "",
-        "## Cross-Asset Allocation",
-        _table(outlook["cross_asset_outlook"], ["asset_class", "expected_direction", "conviction", "rationale", "main_risk"]),
+        "## Cross-Asset Outlook",
+        _table(outlook["cross_asset_outlook"], ["asset_class", "expected_direction", "conviction", "time_horizon", "expected_return_range", "rationale", "key_catalyst", "main_risk", "invalidation_condition", "historical_analog_support", "data_support", "proxy_ticker"]),
         "",
         "## Ranked Opportunities",
-        _table(outlook["top_opportunities"], ["name", "asset_class", "direction", "conviction_score", "proxy_ticker", "invalidation_condition"]),
+        _table(outlook["top_opportunities"], ["rank", "label", "name", "asset_class", "direction", "proxy_ticker", "thesis", "why_now", "catalyst", "probability_of_success", "conviction_score", "upside_case", "downside_case", "invalidation_condition", "recommended_human_review_question"]),
+        "",
+        "## Underweights / Positions to Avoid",
+        _table(outlook["underweights_to_avoid"], ["asset_or_exposure", "reason_to_avoid", "expected_failure_mechanism", "conditions_that_would_make_view_wrong", "tactical_or_strategic"]),
         "",
         "## Ranked Hedges",
-        _table(outlook["recommended_hedges"], ["hedge_name", "risk_protected_against", "implementation_concept", "expected_payoff_condition"]),
+        _table(outlook["recommended_hedges"], ["hedge_name", "hedge_category", "risk_protected_against", "implementation_concept", "expected_cost_or_drag", "expected_payoff_condition", "timing_considerations", "convexity_or_asymmetry", "major_limitation", "conditions_for_removing_hedge"]),
         "",
-        "## Key Risks",
-        _bullets(scenario.get("risks", [])),
+        "## Risk Register",
+        _table(outlook["risk_register"], ["risk", "probability", "impact", "transmission_mechanism", "affected_assets", "early_warning_indicator", "hedge_or_response", "already_priced"]),
         "",
-        "## Probability Distribution",
-        _bullet_dict({"base_case": outlook["base_case"]["probability"], "bull_case": outlook["bull_case"]["probability"], "bear_tail_case": outlook["bear_tail_case"]["probability"]}),
+        "## Confirming Indicators",
+        _table(outlook["what_would_change_the_view"]["confirming_indicators"], ["indicator", "current_status", "threshold_or_direction", "why_it_matters", "affected_recommendation"]),
+        "",
+        "## Invalidating Indicators",
+        _table(outlook["what_would_change_the_view"]["invalidating_indicators"], ["indicator", "current_status", "threshold_or_direction", "why_it_matters", "affected_recommendation"]),
+        "",
+        "## Invalidation Conditions",
+        _table(outlook["what_would_change_the_view"]["invalidating_indicators"], ["indicator", "threshold_or_direction", "why_it_matters", "affected_recommendation"]),
+        "",
+        "## What Changed Since the Last Report",
+        _bullet_dict(outlook["changes_since_last_report"]),
         "",
         "## Debate Summary",
         outlook["debate_summary"],
         "",
-        "## Invalidation Conditions",
-        _bullets(outlook["what_would_change_the_view"]["invalidating_indicators"]),
-        "",
         "## Indicators to Watch",
         _bullets(outlook["data_to_watch_next"]),
         "",
-        "## Conclusion",
-        "Treat the output as a prioritized research agenda. The investment implication is conditional, measurable, and subject to human approval.",
+        "## Traceability",
+        _table(outlook["traceability"], ["conclusion", "supporting_scenario_assumption", "supporting_data_source", "supporting_historical_analog", "supporting_agent_conclusion", "confidence_level"]),
+        "",
+        "## Decisions for the Investment Committee",
+        _bullet_dict(outlook["decisions_for_investment_committee"]),
         "",
         "## Disclaimer",
         outlook["disclaimer"],
@@ -877,7 +923,20 @@ def _scenario_specific_recommendations(scenario: dict[str, Any]) -> list[dict[st
     fed = scenario.get("central_bank_stance", "neutral")
     dollar = scenario.get("dollar_outlook", "stable")
     commodity_shock = scenario.get("commodity_shock", "none")
+    custom = _scenario_text(scenario)
+    fiscal_supply_shock = _is_fiscal_supply_shock(scenario)
 
+    if fiscal_supply_shock:
+        recs.append(_presentation_rec("Defense and aerospace beneficiaries", "overweight", "equity", "highest_conviction", 0.61, 8.3, "Research hypothesis - requires human review: fiscal stimulus and defense spending could support defense and aerospace earnings even as higher real yields pressure broader multiples.", "Defense appropriations weaken, order books roll over, or real-yield pressure overwhelms earnings revisions.", "Defense/aerospace order momentum and fiscal spending confirmation."))
+        recs.append(_presentation_rec("Infrastructure and industrial capex beneficiaries", "overweight", "equity", "highest_conviction", 0.6, 8.1, "Research hypothesis - requires human review: infrastructure spending, tariffs, and supply-chain reshoring can support industrials tied to capex, construction, and defense supply chains.", "Infrastructure funding disappoints, industrial PMIs contract, or tariffs destroy demand more than they support pricing.", "Infrastructure outlays, industrial new orders, and capex guidance."))
+        recs.append(_presentation_rec("Energy and commodity producers", "overweight", "commodity_equity", "asymmetric", 0.59, 7.9, "Research hypothesis - requires human review: energy and broad commodity pressure can lift nominal cash flows for energy producers while also hedging sticky inflation.", "Energy supply normalizes, China stimulus disappoints, or demand destruction dominates price support.", "Oil inventory draws, energy prices, and commodity breadth."))
+        recs.append(_presentation_rec("Industrial metals producers", "overweight", "commodity_equity", "asymmetric", 0.57, 7.6, "Research hypothesis - requires human review: targeted China stimulus and infrastructure demand can support industrial metals despite a stronger dollar headwind.", "China stimulus is too narrow, the dollar squeeze intensifies, or global manufacturing weakens.", "China credit impulse, copper/industrial metals breadth, and EM funding stress."))
+        recs.append(_presentation_rec("Long US dollar", "long", "fx_rates", "defensive", 0.58, 7.5, "Research hypothesis - requires human review: Fed behind-the-curve repricing and higher U.S. real-yield risk can support a stronger USD, pressuring Europe, EM, and dollar-sensitive commodities.", "Fed rhetoric turns dovish or non-U.S. growth leadership improves enough to narrow rate differentials.", "DXY trend, real-yield differentials, and cross-currency funding stress."))
+        recs.append(_presentation_rec("Two-stage gold hedge", "long", "commodity", "hedge", 0.54, 6.8, "Research hypothesis - requires human review: gold may be weak initially if real yields rise, then stabilize as geopolitical risk and policy-credibility concerns rise.", "Real yields rise without geopolitical stress or inflation credibility concern.", "Real yields, gold drawdowns, and geopolitical risk indicators."))
+    if "long-duration technology" in custom or (scenario.get("equity_valuation") in {"expensive", "very expensive"} and fed in {"gradually tightening", "aggressively tightening"}):
+        recs.append(_presentation_rec("Underweight long-duration technology", "underweight", "equity", "avoid", 0.6, 7.8, "Research hypothesis - requires human review: expensive long-duration technology is vulnerable if higher inflation forces real yields higher.", "Inflation rolls over, real yields fall, or AI/earnings revisions offset multiple compression.", "Real yields, Nasdaq duration factor performance, and earnings revision breadth."))
+    if "reit" in custom or financial in {"tight", "severely tight"}:
+        recs.append(_presentation_rec("Underweight REITs", "underweight", "real_assets", "avoid", 0.57, 7.4, "Research hypothesis - requires human review: REITs face pressure from higher real yields, tight financing conditions, and weaker Europe/property sensitivity.", "Long rates fall, credit conditions ease, or property fundamentals reaccelerate.", "REIT credit spreads, cap rates, and real-yield trend."))
     if recession >= 0.6 or financial == "severely tight" or credit_stress >= 7:
         recs.append(_presentation_rec("Short high-yield credit / own quality credit", "underweight", "credit", "defensive", 0.62, 8.2, "High recession probability, tight financial conditions, and credit stress argue for avoiding weak balance sheets.", "Credit spreads tighten and refinancing risk falls."))
         recs.append(_presentation_rec("Defensive cash / T-bills", "overweight", "fixed_income", "defensive", 0.6, 7.5, "Cash/T-bill optionality matters when stress and drawdown risk are elevated.", "Policy eases quickly and risk assets recover."))
@@ -908,26 +967,28 @@ def _case_probabilities(scenario: dict[str, Any]) -> dict[str, float]:
     return {"base": round(base, 2), "bull": round(bull, 2), "bear_tail": round(bear, 2)}
 
 
-def _presentation_rec(asset: str, direction: str, asset_class: str, category: str, probability: float, conviction: float, thesis: str, invalidation: str) -> dict[str, Any]:
+def _presentation_rec(asset: str, direction: str, asset_class: str, category: str, probability: float, conviction: float, thesis: str, invalidation: str, catalyst: str | None = None) -> dict[str, Any]:
     return {
         "asset_or_trade": asset,
         "asset_class": asset_class,
         "direction": direction,
         "category": category,
         "investment_thesis": thesis,
-        "expected_return_range": [-0.04, 0.12],
+        "expected_return_range": None,
         "probability_of_success": probability,
         "conviction": conviction,
         "major_risks": ["Timing error", "Scenario path changes", "Implementation basis risk"],
         "hedge": "Research hypothesis - requires human review.",
         "invalidation_condition": invalidation,
         "expected_time_horizon": "7-14 months",
+        "catalyst": catalyst or "Scenario confirmation through inflation, rates, growth, and policy reaction data.",
     }
 
 
-def _opportunity_row(row: dict[str, Any]) -> dict[str, Any]:
+def _opportunity_row(row: dict[str, Any], scenario: dict[str, Any], rank: int) -> dict[str, Any]:
     proxy, benchmark = PROXY_MAP.get(row["asset_or_trade"], ("SPY", "SPY"))
     return {
+        "rank": rank,
         "label": "Research hypothesis - requires human review.",
         "name": row["asset_or_trade"],
         "asset_class": row["asset_class"],
@@ -936,12 +997,19 @@ def _opportunity_row(row: dict[str, Any]) -> dict[str, Any]:
         "expected_horizon": row.get("expected_time_horizon", "7-14 months"),
         "proxy_ticker": proxy,
         "benchmark": benchmark,
+        "probability_of_success": row.get("probability_of_success"),
         "conditions_for_entry": "Enter research queue when incoming data confirms the scenario direction and liquidity is adequate.",
         "conditions_for_exit": "Exit or resize if the invalidation condition is met or realized data contradicts the thesis.",
         "thesis": row["investment_thesis"],
-        "catalyst": "Scenario confirmation through inflation, rates, growth, and policy reaction data.",
+        "why_now": _why_now(row, scenario),
+        "catalyst": row.get("catalyst", "Scenario confirmation through inflation, rates, growth, and policy reaction data."),
+        "upside_case": _upside_case(row, scenario),
+        "downside_case": row["invalidation_condition"],
         "risks": row["major_risks"],
+        "confirmation_indicators": _confirmation_for_asset(row["asset_or_trade"], scenario),
         "invalidation_condition": row["invalidation_condition"],
+        "historical_analog_support": "Analog support is directional only; insufficient verified data to quantify this item.",
+        "recommended_human_review_question": _human_review_question(row, scenario),
     }
 
 
@@ -950,11 +1018,15 @@ def _hedge_row(row: dict[str, Any], scenario: dict[str, Any]) -> dict[str, Any]:
     return {
         "label": "Research hypothesis - requires human review.",
         "hedge_name": row["asset_or_trade"],
+        "hedge_category": _hedge_category(row, scenario),
         "risk_protected_against": _hedge_risk(row, scenario),
         "implementation_concept": f"Use proxy {proxy} as the measurable research instrument; size against approved portfolio risk.",
         "expected_cost_or_drag": "May lag in risk-on periods or when real yields move against the hedge.",
         "expected_payoff_condition": row["investment_thesis"],
+        "timing_considerations": "Review after major inflation, FOMC, payroll, real-yield, and stress-window updates.",
+        "convexity_or_asymmetry": "Potentially asymmetric if stress or policy credibility risk rises faster than carry cost.",
         "major_limitation": row["invalidation_condition"],
+        "conditions_for_removing_hedge": "Remove or reduce if the hedged risk is invalidated, carry becomes excessive, or approved opportunity exposure is reduced.",
     }
 
 
@@ -968,30 +1040,540 @@ def _hedge_risk(row: dict[str, Any], scenario: dict[str, Any]) -> str:
     return "Policy mistake, growth shock, or inflation credibility risk."
 
 
+def _hedge_category(row: dict[str, Any], scenario: dict[str, Any]) -> str:
+    if row.get("asset_or_trade") == "Two-stage gold hedge":
+        return "thesis-failure hedge"
+    if row.get("asset_or_trade") == "Long equity volatility":
+        return "portfolio-protection hedge"
+    if scenario.get("commodity_shock") != "none":
+        return "tail-risk hedge"
+    return "opportunistic hedge"
+
+
+def _scenario_text(scenario: dict[str, Any]) -> str:
+    return " ".join(
+        str(scenario.get(key, ""))
+        for key in ["scenario_name", "scenario_description", "custom_assumptions", "source_text"]
+    ).lower()
+
+
+def _is_fiscal_supply_shock(scenario: dict[str, Any]) -> bool:
+    text = _scenario_text(scenario)
+    return (
+        "fiscal" in text
+        and any(term in text for term in ["tariff", "supply constraint", "infrastructure", "defense"])
+        and scenario.get("commodity_shock") in {"broad commodity shock", "energy shock", "metals shock"}
+    )
+
+
+def _why_now(row: dict[str, Any], scenario: dict[str, Any]) -> str:
+    if _is_fiscal_supply_shock(scenario):
+        return "The selected scenario combines fiscal demand support, supply constraints, higher real-yield risk, and a delayed Fed response over the stated horizon."
+    return "The recommendation belongs in the research queue because the selected scenario makes the catalyst measurable over the stated horizon."
+
+
+def _upside_case(row: dict[str, Any], scenario: dict[str, Any]) -> str:
+    if row["direction"] in {"underweight", "short", "avoid"}:
+        return "Upside is downside avoided if the exposure underperforms or drawdown risk rises as expected."
+    return "Upside depends on the scenario transmission mechanism showing up in earnings, rates, FX, spreads, or commodity leadership."
+
+
+def _confirmation_for_asset(asset: str, scenario: dict[str, Any]) -> list[str]:
+    asset_lower = asset.lower()
+    indicators = ["Scenario-specific data confirms the selected macro path."]
+    if "defense" in asset_lower:
+        indicators.append("Defense order books and fiscal appropriations improve.")
+    if "infrastructure" in asset_lower or "industrial" in asset_lower:
+        indicators.append("Infrastructure outlays, industrial orders, and capex guidance firm.")
+    if "energy" in asset_lower or "commodity" in asset_lower or "metals" in asset_lower:
+        indicators.append("Energy and industrial metals prices rise with breadth.")
+    if "dollar" in asset_lower:
+        indicators.append("DXY and real-yield differentials confirm stronger USD pressure.")
+    if "technology" in asset_lower or "reit" in asset_lower:
+        indicators.append("Real yields rise and valuation-sensitive exposures lag.")
+    return indicators
+
+
+def _human_review_question(row: dict[str, Any], scenario: dict[str, Any]) -> str:
+    return f"Does the committee agree that {row['asset_or_trade']} is measurable with the selected proxy and directly follows from the confirmed scenario assumptions?"
+
+
+def _default_asset_catalyst(asset: str, scenario: dict[str, Any]) -> str:
+    if asset in {"government bonds", "growth equities", "REITs"}:
+        return "Real-yield and central-bank repricing."
+    if asset in {"oil", "industrial metals", "broad commodities", "MLPs"}:
+        return "Commodity supply-demand confirmation and inflation persistence."
+    if asset in {"U.S. dollar", "major currencies", "international equities", "emerging-market equities"}:
+        return "Rate differentials, dollar trend, and regional growth divergence."
+    if asset in {"investment-grade credit", "high-yield credit"}:
+        return "Credit-spread behavior and financing conditions."
+    return "Incoming macro and market data confirm or reject the scenario transmission mechanism."
+
+
+def _data_support_for_asset(asset: str, scenario: dict[str, Any]) -> str:
+    if asset in {"government bonds", "inflation-linked bonds", "U.S. dollar", "gold"}:
+        return "FRED rates, inflation, labor, and yield-curve data; market prices when available."
+    if asset in {"oil", "industrial metals", "broad commodities", "MLPs"}:
+        return "Yahoo Finance proxy prices and macro inflation data when available."
+    if "credit" in asset:
+        return "Credit proxy prices and financial-conditions indicators when available."
+    return "Current data support is directional; insufficient verified data to quantify this item."
+
+
+def _proxy_for_asset(asset: str) -> str:
+    mapping = {
+        "U.S. equities": "SPY",
+        "international equities": "VEA",
+        "emerging-market equities": "EEM",
+        "growth equities": "QQQ",
+        "value equities": "VLUE",
+        "small caps": "IWM",
+        "government bonds": "IEF/TLT",
+        "inflation-linked bonds": "TIP",
+        "investment-grade credit": "LQD",
+        "high-yield credit": "HYG",
+        "U.S. dollar": "UUP",
+        "major currencies": "FX pairs",
+        "gold": "GLD",
+        "oil": "USO",
+        "industrial metals": "XME",
+        "broad commodities": "DBC",
+        "REITs": "VNQ",
+        "MLPs": "AMLP",
+        "crypto": "BTC-USD/ETH-USD",
+        "cash": "BIL",
+        "volatility": "VIXY",
+    }
+    return mapping.get(asset, "Instrument requires human mapping.")
+
+
+def _probability_detail(scenario: dict[str, Any]) -> dict[str, Any]:
+    case_probs = _case_probabilities(scenario)
+    stated = scenario.get("stated_probabilities") or {}
+    user = {
+        "scenario_probability": scenario.get("probability"),
+        "recession_probability": scenario.get("recession_probability"),
+        "stated_probabilities": stated,
+    }
+    numeric = [value for value in stated.values() if isinstance(value, (int, float))]
+    total = sum(numeric) if numeric else None
+    warnings = []
+    if total is not None and abs(total - 1.0) > 0.01:
+        warnings.append("User-provided probabilities do not sum to 100%; they are preserved and not silently normalized.")
+    if scenario.get("probability") is None:
+        warnings.append("Scenario probability unavailable because the user did not provide one.")
+    return {
+        "user_provided_probabilities": user,
+        "model_derived_case_probabilities": case_probs,
+        "normalized_probabilities": "Unavailable unless explicitly approved; user probabilities are preserved.",
+        "warnings": warnings,
+    }
+
+
+def _macro_thesis(scenario: dict[str, Any], cross_asset: list[dict[str, Any]]) -> dict[str, Any]:
+    chain = _transmission_chain(scenario)
+    return {
+        "7_14_month_base_case": f"{scenario['growth_outlook']} with inflation {scenario['inflation_direction']} and the Fed {scenario['fed_position']}.",
+        "transmission_mechanism": " -> ".join(chain),
+        "key_assumptions": _key_assumptions(scenario),
+        "expected_sequence_of_events": chain,
+        "central_bank_reaction_function": _central_bank_response(scenario),
+        "country_and_regional_divergences": _regional_divergence_summary(scenario),
+        "confidence_score": round(float(scenario.get("conviction", 7.0)), 1),
+        "evidence_quality_score": _evidence_quality_score(scenario),
+        "invalidation_conditions": scenario.get("invalidation_triggers") or ["Insufficient verified data to quantify this item."],
+    }
+
+
+def _transmission_chain(scenario: dict[str, Any]) -> list[str]:
+    chain = []
+    text = _scenario_text(scenario)
+    if "fiscal" in text:
+        chain.append("Fiscal stimulus supports nominal demand")
+    else:
+        chain.append(f"Growth remains {scenario['growth_outlook']}")
+    if "tariff" in text or "supply constraint" in text:
+        chain.append("Tariffs and supply constraints keep inflation risk elevated")
+    elif scenario.get("commodity_shock") != "none":
+        chain.append(f"{scenario['commodity_shock']} reinforces inflation pressure")
+    else:
+        chain.append(f"Inflation is {scenario['inflation_direction']}")
+    chain.append(f"The Fed is {scenario['fed_position']} and policy is {scenario['central_bank_stance']}")
+    if scenario.get("dollar_outlook") in {"moderately stronger", "sharply stronger"}:
+        chain.append("Real-yield risk and dollar strength tighten global conditions")
+    if scenario.get("commodity_shock") != "none":
+        chain.append("Commodity-sensitive cash flows gain support while duration assets face pressure")
+    chain.append("Human review decides which hypotheses are approved for tracking")
+    return chain
+
+
+def _key_assumptions(scenario: dict[str, Any]) -> list[str]:
+    assumptions = [
+        f"Growth: {scenario['growth_outlook']}",
+        f"Inflation: {scenario['inflation_direction']} with {scenario.get('inflation_surprise_label', 'in line')} surprise risk",
+        f"Fed: {scenario['central_bank_stance']} and {scenario['fed_position']}",
+        f"Financial conditions: {scenario['financial_conditions']}; credit stress {scenario['credit_stress']}/10",
+        f"USD: {scenario['dollar_outlook']}; commodity shock: {scenario['commodity_shock']}",
+    ]
+    custom = scenario.get("custom_assumptions")
+    if custom:
+        assumptions.append(f"User custom assumptions: {custom}")
+    return assumptions
+
+
+def _evidence_quality_score(scenario: dict[str, Any]) -> float:
+    score = 5.5
+    if scenario.get("custom_assumptions"):
+        score += 0.8
+    if scenario.get("stated_probabilities"):
+        score += 0.5
+    if scenario.get("field_excerpts"):
+        score += 0.5
+    return round(min(score, 8.0), 1)
+
+
+def _regional_divergence_summary(scenario: dict[str, Any]) -> str:
+    regions = {region.lower() for region in scenario.get("countries_or_regions", [])}
+    pieces = []
+    if "eurozone" in regions:
+        pieces.append("Eurozone weaker if energy costs rise and USD strength tightens external conditions.")
+    if "china" in regions:
+        pieces.append("China improves at the margin if targeted stimulus supports industrial demand.")
+    if "emerging markets" in regions:
+        pieces.append("Emerging markets are split between commodity exporters and USD-funding pressure.")
+    if not pieces:
+        pieces.append("Regional divergence is limited to selected regions; insufficient verified data for broader country ranking.")
+    return " ".join(pieces)
+
+
+def _central_bank_analysis(scenario: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "current_stance": scenario["central_bank_stance"],
+        "likely_reaction_function": f"React to inflation persistence, labor tightness, and financial conditions; current scenario has the Fed {scenario['fed_position']}.",
+        "market_implied_path": "Insufficient verified data to quantify this item.",
+        "behind_or_ahead_curve_risk": f"Fed position selected by user/model: {scenario['fed_position']}.",
+        "expected_policy_transition": scenario["expected_policy_path"],
+        "cross_country_policy_divergence": _regional_divergence_summary(scenario),
+        "likely_asset_consequences": "Higher real-yield risk pressures duration-sensitive assets; policy credibility risk supports explicit hedges.",
+    }
+
+
+def _country_regional_views(scenario: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for region in scenario.get("countries_or_regions", ["U.S."]):
+        lower = region.lower()
+        if lower in {"eurozone", "europe"}:
+            row = {
+                "region": region,
+                "growth_outlook": "weaker / energy-sensitive",
+                "inflation_outlook": "vulnerable to energy pass-through",
+                "central_bank_path": "more constrained by weak growth and imported inflation",
+                "currency_implication": "weaker versus stronger USD",
+                "equity_implication": "underweight energy-import-sensitive Europe until evidence improves",
+                "bond_implication": "mixed; growth weakness helps bonds but inflation risk limits duration confidence",
+                "commodity_sensitivity": "negative if energy costs rise",
+                "major_risk": "Energy prices fall or European growth proves more resilient.",
+            }
+        elif lower == "china":
+            row = {
+                "region": region,
+                "growth_outlook": "targeted stimulus support",
+                "inflation_outlook": "less central unless commodity demand tightens supply",
+                "central_bank_path": "policy support remains possible",
+                "currency_implication": "stronger USD remains a headwind",
+                "equity_implication": "selective support for commodity and infrastructure-linked beneficiaries",
+                "bond_implication": "policy easing can support local duration selectively",
+                "commodity_sensitivity": "positive for industrial metals if stimulus broadens",
+                "major_risk": "Stimulus is too narrow to lift commodity demand.",
+            }
+        elif "emerging" in lower:
+            row = {
+                "region": region,
+                "growth_outlook": "mixed",
+                "inflation_outlook": "commodity exporters benefit; importers face pressure",
+                "central_bank_path": "divergent by inflation and FX pressure",
+                "currency_implication": "USD strength is a funding headwind",
+                "equity_implication": "favor commodity exporters over externally financed cyclicals",
+                "bond_implication": "local bonds vulnerable where FX and inflation pressure rise",
+                "commodity_sensitivity": "high",
+                "major_risk": "Dollar weakens or commodity shock fades.",
+            }
+        else:
+            row = {
+                "region": region,
+                "growth_outlook": scenario["growth_outlook"],
+                "inflation_outlook": scenario["inflation_direction"],
+                "central_bank_path": scenario["central_bank_stance"],
+                "currency_implication": scenario["dollar_outlook"],
+                "equity_implication": "selective; favor exposures tied to confirmed scenario catalysts",
+                "bond_implication": "duration faces real-yield and inflation-repricing risk",
+                "commodity_sensitivity": scenario["commodity_shock"],
+                "major_risk": "Scenario assumptions fail to appear in realized data.",
+            }
+        rows.append(row)
+    return rows
+
+
+def _underweights_to_avoid(scenario: dict[str, Any], recommendations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = []
+    avoid_recs = [row for row in recommendations if row.get("category") == "avoid"]
+    for row in avoid_recs:
+        rows.append(
+            {
+                "asset_or_exposure": row["asset_or_trade"],
+                "reason_to_avoid": row["investment_thesis"],
+                "expected_failure_mechanism": row["invalidation_condition"] if row["direction"] in {"overweight", "long"} else "Higher real yields, tighter financing, or weaker earnings revisions pressure the exposure.",
+                "conditions_that_would_make_view_wrong": row["invalidation_condition"],
+                "tactical_or_strategic": "tactical",
+            }
+        )
+    if _is_fiscal_supply_shock(scenario):
+        names = {row["asset_or_exposure"] for row in rows}
+        if "Underweight long-duration technology" not in names:
+            rows.append({"asset_or_exposure": "Long-duration technology", "reason_to_avoid": "Expensive equity valuation plus higher real-yield risk creates multiple-compression vulnerability.", "expected_failure_mechanism": "Real yields rise and duration-like equity cash flows de-rate.", "conditions_that_would_make_view_wrong": "Inflation rolls over or earnings revisions overwhelm rate pressure.", "tactical_or_strategic": "tactical"})
+        if "Underweight REITs" not in names:
+            rows.append({"asset_or_exposure": "REITs", "reason_to_avoid": "Tight financial conditions and higher real yields pressure cap rates and funding costs.", "expected_failure_mechanism": "Cap rates rise and credit availability tightens.", "conditions_that_would_make_view_wrong": "Long rates fall and property fundamentals improve.", "tactical_or_strategic": "tactical"})
+    return rows or [{"asset_or_exposure": "No explicit avoid identified", "reason_to_avoid": "Not enough information to populate this section.", "expected_failure_mechanism": "Insufficient verified data to quantify this item.", "conditions_that_would_make_view_wrong": "Not applicable.", "tactical_or_strategic": "not applicable"}]
+
+
+def _structured_confirming_indicators(scenario: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for item in _confirming_indicators(scenario):
+        rows.append({
+            "indicator": item,
+            "current_status": "Insufficient verified data to quantify this item.",
+            "threshold_or_direction": _indicator_threshold(item),
+            "why_it_matters": "Confirms whether the scenario assumptions are becoming observable in macro or market data.",
+            "affected_recommendation": _affected_recommendation(item),
+        })
+    return rows
+
+
+def _structured_invalidating_indicators(scenario: dict[str, Any]) -> list[dict[str, Any]]:
+    triggers = scenario.get("invalidation_triggers") or ["Scenario assumptions fail to appear in realized data."]
+    return [
+        {
+            "indicator": item,
+            "current_status": "Insufficient verified data to quantify this item.",
+            "threshold_or_direction": _indicator_threshold(item),
+            "why_it_matters": "Would require weakening, revising, or invalidating the thesis before it enters training data.",
+            "affected_recommendation": _affected_recommendation(item),
+        }
+        for item in triggers
+    ]
+
+
+def _indicator_threshold(item: str) -> str:
+    lower = item.lower()
+    if "inflation" in lower or "cpi" in lower or "pce" in lower:
+        return "Watch direction across multiple releases; exact threshold requires committee approval."
+    if "dollar" in lower or "dxy" in lower:
+        return "Trend must confirm selected USD direction."
+    if "credit" in lower or "spread" in lower:
+        return "Spread direction must confirm or reject stress assumption."
+    if "real yield" in lower or "treasury" in lower:
+        return "Real-yield trend must match rate-repricing thesis."
+    return "Direction must be consistent with confirmed scenario assumptions."
+
+
+def _affected_recommendation(item: str) -> str:
+    lower = item.lower()
+    if "commodity" in lower or "energy" in lower or "metals" in lower:
+        return "Energy, industrial metals, commodities, inflation hedges."
+    if "dollar" in lower or "dxy" in lower:
+        return "USD, international equities, emerging markets, commodities."
+    if "credit" in lower:
+        return "Credit, equities, REITs, cash optionality."
+    if "fed" in lower or "real yield" in lower or "treasury" in lower:
+        return "Duration, growth equities, REITs, gold, USD."
+    return "Macro thesis and ranked opportunities."
+
+
+def _risk_register(scenario: dict[str, Any], hedges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    hedge_name = hedges[0]["hedge_name"] if hedges else "Explicit hedge review required."
+    base = [
+        ("Thesis risk", "medium", "high", "Inflation, growth, or Fed path differs from confirmed assumptions.", "All ranked opportunities", "CPI/PCE, payrolls, FOMC language", hedge_name, "partly"),
+        ("Implementation risk", "medium", "medium", "Proxy instrument does not match intended exposure.", "Proxy-tracked opportunities", "Proxy basis versus intended exposure", "Manual proxy review", "not fully"),
+        ("Liquidity risk", "low to medium", "medium", "Volatility rises and liquidity deteriorates during execution windows.", "Small caps, credit, hedges", "Bid/ask spreads and volume", "Cash/T-bill optionality", "mixed"),
+        ("Policy risk", "medium", "high", _policy_risk_mechanism(scenario), "Duration, growth equities, credit", "FOMC reaction function and real yields", hedge_name, "partly"),
+        ("Model/data-quality risk", "medium", "medium", "Unavailable or stale data weakens evidence quality.", "All sections", "Source-status monitor", "Human review and data-refresh gate", "not fully"),
+    ]
+    if _is_fiscal_supply_shock(scenario):
+        base.append(("Geopolitical / tariff risk", "medium", "high", "Tariffs and supply constraints keep inflation elevated while regional winners diverge.", "Europe, commodities, industrials, USD", "Tariff announcements, energy prices, shipping/supply indicators", "Commodity and volatility hedges", "mixed"))
+    return [
+        {
+            "risk": risk,
+            "probability": probability,
+            "impact": impact,
+            "transmission_mechanism": mechanism,
+            "affected_assets": assets,
+            "early_warning_indicator": indicator,
+            "hedge_or_response": response,
+            "already_priced": priced,
+        }
+        for risk, probability, impact, mechanism, assets, indicator, response, priced in base
+    ]
+
+
+def _policy_risk_mechanism(scenario: dict[str, Any]) -> str:
+    if scenario.get("fed_position") == "behind the curve":
+        return "Fed overtightening risk rises if delayed tightening later becomes aggressive."
+    if scenario.get("central_bank_stance") in {"gradually easing", "aggressively easing"}:
+        return "Fed easing may arrive too slowly if growth deterioration accelerates or inflation reappears."
+    if scenario.get("fed_position") == "ahead of the curve":
+        return "Fed may stay too restrictive relative to growth and inflation conditions."
+    return "Policy reaction function differs from the selected scenario path."
+
+
+def _traceability_map(scenario: dict[str, Any], data_snapshot: dict[str, Any], analogs: dict[str, Any], opportunities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    source_status = data_snapshot.get("source_status", {}) if isinstance(data_snapshot, dict) else {}
+    live_sources = [source for source, status in source_status.items() if "ok" in str(status).lower() or "live" in str(status).lower()]
+    analog = "Insufficient verified analog data to quantify this item."
+    ranked = analogs.get("ranked_historical_analogs", []) if isinstance(analogs, dict) else []
+    if ranked:
+        analog = ranked[0].get("period", analog)
+    rows = [
+        {
+            "conclusion": "Macro thesis",
+            "supporting_scenario_assumption": "; ".join(_key_assumptions(scenario)[:4]),
+            "supporting_data_source": ", ".join(live_sources) if live_sources else "Insufficient verified data to quantify this item.",
+            "supporting_historical_analog": analog,
+            "supporting_agent_conclusion": "Scenario Lab, historical analog, recommendation, and hedge logic agree directionally.",
+            "confidence_level": f"{_evidence_quality_score(scenario)}/10 evidence quality",
+        }
+    ]
+    for opportunity in opportunities[:5]:
+        rows.append(
+            {
+                "conclusion": opportunity["name"],
+                "supporting_scenario_assumption": opportunity["thesis"],
+                "supporting_data_source": opportunity.get("confirmation_indicators", ["Insufficient verified data to quantify this item."])[0],
+                "supporting_historical_analog": opportunity.get("historical_analog_support", analog),
+                "supporting_agent_conclusion": opportunity["label"],
+                "confidence_level": f"{opportunity['conviction_score']}/10 conviction",
+            }
+        )
+    return rows
+
+
+def _prior_report_comparison(scenario: dict[str, Any]) -> dict[str, Any]:
+    reports = list_investment_committee_reports(limit=5)
+    previous = next((row for row in reports if row.get("report", {}).get("scenario_definition", {}).get("name") != scenario.get("scenario_name")), None)
+    if not previous:
+        return {
+            "thesis_changes": "No prior comparable report exists.",
+            "probability_changes": "No prior comparable report exists.",
+            "ranking_changes": "No prior comparable report exists.",
+            "new_opportunities": "Current run creates the initial opportunity set for this scenario.",
+            "removed_opportunities": "No prior comparable report exists.",
+            "hedge_changes": "Current run creates the initial hedge menu for this scenario.",
+            "changed_risks": "No prior comparable report exists.",
+            "changed_invalidation_conditions": "No prior comparable report exists.",
+            "data_that_caused_change": "No prior comparable report exists.",
+        }
+    prior_report = previous.get("report", {})
+    return {
+        "thesis_changes": "Current scenario uses a distinct confirmed scenario definition versus the most recent report.",
+        "probability_changes": "Probability changes require comparable prior scenario probabilities; otherwise preserved as user/model labels.",
+        "ranking_changes": "Ranking changes are scenario-specific and should be reviewed in the report selector.",
+        "new_opportunities": "See ranked opportunities table.",
+        "removed_opportunities": "Insufficient verified data to quantify this item.",
+        "hedge_changes": "See hedge menu and risk register.",
+        "changed_risks": "Risk register reflects current scenario assumptions.",
+        "changed_invalidation_conditions": "Invalidation conditions are derived from current assumptions.",
+        "data_that_caused_change": "Scenario assumptions and available source-status data.",
+    }
+
+
+def _investment_committee_decisions(scenario: dict[str, Any], opportunities: list[dict[str, Any]], underweights: list[dict[str, Any]], hedges: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "decisions_requested": "Approve, reject, or request revisions to each research hypothesis; no trade execution is authorized.",
+        "opportunities_to_approve": [item["name"] for item in opportunities[:5]],
+        "opportunities_to_reject": "None automatically rejected; committee should reject any item without a measurable proxy or causal link.",
+        "items_requiring_more_research": [item["asset_or_exposure"] for item in underweights[:4]],
+        "data_releases_to_wait_for": _data_to_watch(scenario)[:5],
+        "recommended_review_date": "Next major CPI/PCE, payroll, FOMC, or credit-spread update.",
+        "thesis_status": "maintain pending human review",
+    }
+
+
+def _case_markdown(outlook: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            "### Base Case",
+            _bullet_dict(outlook["base_case"]),
+            "",
+            "### Bull Case",
+            _bullet_dict(outlook["bull_case"]),
+            "",
+            "### Bear / Tail Case",
+            _bullet_dict(outlook["bear_tail_case"]),
+        ]
+    )
+
+
+def _probability_markdown(probabilities: dict[str, Any]) -> str:
+    lines = ["### User-Provided Probabilities", _bullet_dict(probabilities.get("user_provided_probabilities", {})), "", "### Model-Derived Probabilities", _bullet_dict(probabilities.get("model_derived_case_probabilities", {})), "", "### Normalized Probabilities", str(probabilities.get("normalized_probabilities", ""))]
+    warnings = probabilities.get("warnings", [])
+    if warnings:
+        lines.extend(["", "### Probability Warnings", _bullets(warnings)])
+    return "\n".join(lines)
+
+
 def _fallback_hedge(scenario: dict[str, Any]) -> dict[str, Any]:
     if scenario.get("market_volatility") in {"high", "crisis"}:
         return {
             "label": "Research hypothesis - requires human review.",
             "hedge_name": "Long equity volatility",
+            "hedge_category": "portfolio-protection hedge",
             "risk_protected_against": "High volatility, equity drawdown, and credit-spread shock.",
             "implementation_concept": "Use VIXY as a liquid proxy for measurement; human review required.",
             "expected_cost_or_drag": "High carry drag if volatility mean-reverts or markets rally.",
             "expected_payoff_condition": "Pays if stress windows deepen or volatility remains elevated.",
+            "timing_considerations": "Review around FOMC, inflation, payroll, and credit-spread updates.",
+            "convexity_or_asymmetry": "Convex if volatility rises faster than carry cost.",
             "major_limitation": "Timing and roll costs can overwhelm payoff if stress arrives late.",
+            "conditions_for_removing_hedge": "Remove if volatility normalizes and thesis-risk exposure is reduced.",
         }
     return {
         "label": "Research hypothesis - requires human review.",
         "hedge_name": "Gold / policy credibility hedge",
+        "hedge_category": "thesis-failure hedge",
         "risk_protected_against": "Sticky inflation and delayed central-bank response.",
         "implementation_concept": "Use GLD as a proxy for measurement; human review required.",
         "expected_cost_or_drag": "Can drag if real yields rise sharply.",
         "expected_payoff_condition": "Pays if inflation credibility or policy confidence deteriorates.",
+        "timing_considerations": "Review after real-yield, inflation, and geopolitical-risk updates.",
+        "convexity_or_asymmetry": "Asymmetric if policy credibility worsens after initial real-yield pressure.",
         "major_limitation": "Fails if inflation falls quickly and real yields rise.",
+        "conditions_for_removing_hedge": "Remove if inflation and policy credibility risks are invalidated.",
     }
 
 
 def _cross_asset_outlook(scenario: dict[str, Any], recommendations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    assets = ["equities", "government bonds", "credit", "currencies", "commodities", "gold", "oil", "crypto", "REITs", "MLPs", "cash"]
+    assets = [
+        "U.S. equities",
+        "international equities",
+        "emerging-market equities",
+        "growth equities",
+        "value equities",
+        "small caps",
+        "government bonds",
+        "inflation-linked bonds",
+        "investment-grade credit",
+        "high-yield credit",
+        "U.S. dollar",
+        "major currencies",
+        "gold",
+        "oil",
+        "industrial metals",
+        "broad commodities",
+        "REITs",
+        "MLPs",
+        "crypto",
+        "cash",
+        "volatility",
+    ]
     rows = []
     for asset in assets:
         rec = _matching_rec(asset, recommendations)
@@ -1000,16 +1582,24 @@ def _cross_asset_outlook(scenario: dict[str, Any], recommendations: list[dict[st
             conviction = rec["conviction"]
             rationale = rec["investment_thesis"]
             risk = rec["invalidation_condition"]
+            catalyst = rec.get("catalyst", "Scenario confirmation through data.")
         else:
             direction, conviction, rationale, risk = _default_asset_view(asset, scenario)
+            catalyst = _default_asset_catalyst(asset, scenario)
         rows.append(
             {
                 "asset_class": asset,
                 "expected_direction": direction,
                 "conviction": conviction,
                 "time_horizon": scenario["scenario_duration"],
+                "expected_return_range": "Insufficient verified data to quantify this item.",
                 "rationale": rationale,
+                "key_catalyst": catalyst,
                 "main_risk": risk,
+                "invalidation_condition": risk,
+                "historical_analog_support": "Directional analog only; not a deterministic forecast.",
+                "data_support": _data_support_for_asset(asset, scenario),
+                "proxy_ticker": _proxy_for_asset(asset),
             }
         )
     return rows
@@ -1019,7 +1609,15 @@ def _matching_rec(asset: str, recommendations: list[dict[str, Any]]) -> dict[str
     text = asset.lower()
     for rec in recommendations:
         haystack = f"{rec.get('asset_or_trade', '')} {rec.get('asset_class', '')}".lower()
-        if text.split()[0] in haystack or ("gold" in text and "gold" in haystack) or ("oil" in text and "energy" in haystack):
+        if (
+            text.split()[0] in haystack
+            or ("gold" in text and "gold" in haystack)
+            or ("oil" in text and "energy" in haystack)
+            or ("industrial metals" in text and "metals" in haystack)
+            or ("reit" in text and "reit" in haystack)
+            or ("growth equities" in text and "technology" in haystack)
+            or ("u.s. dollar" in text and "dollar" in haystack)
+        ):
             return rec
     return None
 
@@ -1032,28 +1630,30 @@ def _default_asset_view(asset: str, scenario: dict[str, Any]) -> tuple[str, floa
     dollar = scenario.get("dollar_outlook", "stable")
     commodity_shock = scenario.get("commodity_shock", "none")
     valuation = scenario.get("equity_valuation", "fair")
-    if asset == "equities" and (recession >= 0.6 or volatility in {"high", "crisis"} or financial in {"tight", "severely tight"}):
+    if asset in {"U.S. equities", "international equities", "emerging-market equities"} and (recession >= 0.6 or volatility in {"high", "crisis"} or financial in {"tight", "severely tight"}):
         return "cautious / underweight candidate", 7.0, f"Recession probability at {recession:.0%}, {volatility} volatility, and {financial} financial conditions argue for lower equity beta.", "Growth reaccelerates or policy eases quickly."
-    if asset == "equities" and valuation in {"very cheap", "cheap"} and recession < 0.35:
+    if asset in {"U.S. equities", "value equities"} and valuation in {"very cheap", "cheap"} and recession < 0.35:
         return "positive / overweight candidate", 6.7, "Valuation support and contained recession risk can improve equity asymmetry.", "Earnings revisions deteriorate."
-    if asset == "credit" and (credit_stress >= 6 or financial in {"tight", "severely tight"}):
+    if asset in {"investment-grade credit", "high-yield credit"} and (credit_stress >= 6 or financial in {"tight", "severely tight"}):
         return "underweight / avoid weakest credit", 7.5, f"Credit stress at {credit_stress}/10 and {financial} financial conditions raise refinancing and spread risk.", "Spreads stabilize and default risk falls."
-    if asset == "currencies" and dollar in {"moderately stronger", "sharply stronger"}:
+    if asset in {"U.S. dollar", "major currencies"} and dollar in {"moderately stronger", "sharply stronger"}:
         return "favor USD strength", 7.0, "Dollar strength pressures non-U.S. assets, commodities, and EM funding conditions.", "Fed turns dovish or global growth leadership broadens."
-    if asset == "currencies" and dollar in {"moderately weaker", "sharply weaker"}:
+    if asset in {"U.S. dollar", "major currencies"} and dollar in {"moderately weaker", "sharply weaker"}:
         return "favor non-USD exposure", 6.7, "A weaker dollar can support international equities, EM assets, and commodity liquidity.", "U.S. real rates rise or funding stress returns."
-    if asset in {"commodities", "oil", "MLPs"} and commodity_shock != "none":
+    if asset in {"broad commodities", "oil", "industrial metals", "MLPs"} and commodity_shock != "none":
         return "positive / overweight candidate", 7.4, f"{commodity_shock} can lift inflation risk and support real-asset cash flows.", "Supply normalizes or demand weakens."
     if asset == "gold" and (volatility in {"high", "crisis"} or commodity_shock != "none" or dollar in {"sharply weaker", "moderately weaker"}):
-        return "long / hedge candidate", 7.0, "Gold helps hedge policy credibility, volatility, and real-rate uncertainty.", "Real yields rise sharply."
+        return "two-stage hedge candidate", 7.0, "Gold may lag while real yields rise, then stabilize if geopolitical or policy-credibility risk builds.", "Real yields rise sharply without a risk premium."
     if asset == "cash" and (volatility in {"high", "crisis"} or credit_stress >= 7):
         return "overweight optionality", 7.0, "Cash protects optionality when volatility or credit stress is high.", "Risk-on liquidity returns quickly."
-    if scenario["inflation_direction"] in {"rising", "elevated"} and asset in {"commodities", "gold", "oil", "MLPs"}:
+    if scenario["inflation_direction"] in {"rising", "elevated"} and asset in {"broad commodities", "gold", "oil", "industrial metals", "MLPs"}:
         return "positive / overweight candidate", 6.8, "Inflation surprise can support real assets and nominal cash-flow beneficiaries.", "Inflation rolls over or real rates rise sharply."
     if scenario["central_bank_policy_stance"] == "delayed_tightening" and asset == "cash":
         return "neutral", 5.5, "Cash optionality improves if policy repricing becomes disorderly.", "Risk assets continue higher without volatility."
-    if asset in {"government bonds", "credit", "crypto"}:
+    if asset in {"government bonds", "growth equities", "crypto", "inflation-linked bonds"}:
         return "cautious / underweight candidate", 6.2, "Delayed tightening with inflation surprise can pressure duration-sensitive assets.", "Growth shock forces dovish repricing."
+    if asset == "volatility" and volatility in {"high", "crisis"}:
+        return "long / hedge candidate", 7.2, "High selected volatility raises the value of convex portfolio protection.", "Volatility normalizes before portfolio drawdown risk appears."
     return "mixed / selective", 5.8, "Scenario creates dispersion; require instrument-level confirmation.", "Scenario fails to translate into asset-price leadership."
 
 
@@ -1413,6 +2013,7 @@ def _analog_rows(analogs: dict[str, Any], performance: dict[str, Any]) -> list[d
                 ],
                 "why_it_matters": analog["historical_regime_description"],
                 "why_it_may_fail": analog["not_exact_forecast"],
+                "supports_or_contradicts": "Supports the thesis directionally only; historical analogs are not deterministic forecasts.",
             }
         )
     return rows

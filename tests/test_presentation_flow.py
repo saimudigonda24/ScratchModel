@@ -45,6 +45,36 @@ SOFT_LANDING_EASING_SCENARIO = (
     "a 25% probability of renewed inflation that delays rate cuts, and a 20% probability of a mild recession."
 )
 
+FISCAL_SUPPLY_SHOCK_SCENARIO = {
+    "scenario_name": "Fiscal Stimulus Meets Supply Shock",
+    "scenario_description": "Fiscal stimulus meets tariffs and supply constraints in a higher-inflation environment.",
+    "growth_outlook": "moderate growth",
+    "inflation_direction": "moderately higher",
+    "inflation_surprise": "large upside surprise",
+    "central_bank_stance": "gradually tightening",
+    "expected_policy_path": "The Fed tightens gradually at first but risks falling behind the curve.",
+    "fed_position": "behind the curve",
+    "labor_market": "strong",
+    "financial_conditions": "tight",
+    "market_volatility": "high",
+    "credit_stress": 4,
+    "dollar_outlook": "moderately stronger",
+    "commodity_shock": "broad commodity shock",
+    "equity_valuation": "expensive",
+    "time_horizon": "6-12 months",
+    "recession_probability": 0.20,
+    "probability": 0.50,
+    "countries_or_regions": ["U.S.", "Eurozone", "China", "emerging markets"],
+    "custom_assumptions": (
+        "fiscal stimulus supports infrastructure and defense; tariffs and supply constraints keep inflation elevated; "
+        "energy and industrial metals rise; China adds targeted stimulus; Europe weakens due to higher energy costs; "
+        "defense, industrials, infrastructure, energy outperform; utilities, REITs, and long-duration technology underperform; "
+        "gold is weak initially due to higher real yields, then stabilizes as geopolitical risk rises"
+    ),
+    "risks": ["Fed overtightening risk if delayed tightening later becomes aggressive."],
+    "invalidation_triggers": ["Inflation rolls over and energy and industrial metals reverse lower."],
+}
+
 
 class FakeSnapshot:
     def model_dump(self, mode="json"):
@@ -72,7 +102,7 @@ def test_scenario_submission_generates_presentation_outlook(monkeypatch):
     assert outlook["demo"] is True
     assert "Executive" not in outlook["executive_outlook"]
     assert outlook["base_case"]["probability"] == DEMO_SCENARIO["probability"]
-    assert len(outlook["cross_asset_outlook"]) == 11
+    assert len(outlook["cross_asset_outlook"]) == 21
     assert outlook["top_opportunities"]
     assert outlook["recommended_hedges"]
     assert outlook["data_to_watch_next"]
@@ -89,12 +119,14 @@ def test_final_outlook_formatting_and_markdown_export(monkeypatch):
         "Macro Outlook",
         "Central Bank Outlook",
         "Historical Analogs",
-        "Cross-Asset Allocation",
+        "Cross-Asset Outlook",
         "Ranked Opportunities",
         "Ranked Hedges",
+        "Underweights / Positions to Avoid",
+        "Risk Register",
+        "Decisions for the Investment Committee",
         "Invalidation Conditions",
         "Indicators to Watch",
-        "Conclusion",
     ]
     for section in required_sections:
         assert f"## {section}" in markdown
@@ -487,6 +519,95 @@ def test_manager_scenario_final_output_sections_are_non_empty(monkeypatch):
     assert outlook["historical_analogs"]
     markdown = outlook_to_markdown(outlook)
     assert "Not enough information to populate this section." not in markdown
+
+
+def test_fiscal_supply_shock_ic_report_is_specific_and_traceable(monkeypatch):
+    monkeypatch.setattr("app.services.scenario_presentation.ingest_all_sources", lambda: FakeSnapshot())
+
+    outlook = generate_presentation_outlook(FISCAL_SUPPLY_SHOCK_SCENARIO, sequence_name="Fiscal Supply Shock Regression")
+    markdown = outlook_to_markdown(outlook)
+    rendered = markdown.lower()
+
+    required_phrases = [
+        "defense",
+        "aerospace",
+        "infrastructure",
+        "industrials",
+        "energy",
+        "industrial metals",
+        "stronger usd",
+        "eurozone weaker",
+        "china",
+        "targeted stimulus",
+        "long-duration technology",
+        "reit",
+        "gold may be weak initially",
+        "higher real-yield risk",
+        "fed overtightening risk",
+        "research hypothesis - requires human review",
+    ]
+    for phrase in required_phrases:
+        assert phrase in rendered
+    assert outlook["scenario_probabilities"]["user_provided_probabilities"]["scenario_probability"] == 0.50
+    assert outlook["scenario_probabilities"]["user_provided_probabilities"]["recession_probability"] == 0.20
+    assert outlook["base_case"]["probability"] == 0.50
+    assert outlook["bear_tail_case"]["probability"] == 0.20
+    assert outlook["top_opportunities"]
+    assert outlook["underweights_to_avoid"]
+    assert outlook["recommended_hedges"]
+    assert outlook["traceability"]
+    assert outlook["decisions_for_investment_committee"]["opportunities_to_approve"]
+
+
+def test_fiscal_supply_shock_report_sections_non_empty_and_no_unsupported_return_ranges(monkeypatch):
+    monkeypatch.setattr("app.services.scenario_presentation.ingest_all_sources", lambda: FakeSnapshot())
+
+    outlook = generate_presentation_outlook(FISCAL_SUPPLY_SHOCK_SCENARIO, sequence_name="Fiscal Sections Regression")
+    sections = [
+        "macro_thesis",
+        "scenario_probabilities",
+        "cross_asset_outlook",
+        "top_opportunities",
+        "underweights_to_avoid",
+        "recommended_hedges",
+        "historical_analogs",
+        "central_bank_analysis",
+        "country_regional_views",
+        "risk_register",
+        "what_would_change_the_view",
+        "debate_summary",
+        "changes_since_last_report",
+        "decisions_for_investment_committee",
+    ]
+    for section in sections:
+        assert outlook[section]
+    for row in outlook["cross_asset_outlook"]:
+        assert row["expected_return_range"] == "Insufficient verified data to quantify this item."
+    assert "Insufficient verified data to quantify this item." in outlook_to_markdown(outlook)
+
+
+def test_probability_preservation_warning_when_stated_probabilities_do_not_sum(monkeypatch):
+    monkeypatch.setattr("app.services.scenario_presentation.ingest_all_sources", lambda: FakeSnapshot())
+    scenario = {
+        **FISCAL_SUPPLY_SHOCK_SCENARIO,
+        "stated_probabilities": {"base": 0.5, "bear": 0.2},
+    }
+
+    outlook = generate_presentation_outlook(scenario, sequence_name="Probability Preservation Regression")
+
+    assert outlook["scenario_probabilities"]["user_provided_probabilities"]["stated_probabilities"] == {"base": 0.5, "bear": 0.2}
+    assert outlook["scenario_probabilities"]["warnings"]
+
+
+def test_report_retrieval_and_export_contains_human_decision_section(monkeypatch):
+    monkeypatch.setattr("app.services.scenario_presentation.ingest_all_sources", lambda: FakeSnapshot())
+    outlook = generate_presentation_outlook(FISCAL_SUPPLY_SHOCK_SCENARIO, sequence_name="Report Export Regression")
+
+    reports = list_investment_committee_reports(limit=500)
+    report = next(row for row in reports if row["run_id"] == outlook["run_id"])
+
+    assert "Decisions for the Investment Committee" in report["markdown"]
+    assert "Traceability" in report["markdown"]
 
 
 def test_soft_landing_outlook_does_not_contain_inflation_preset_leakage(monkeypatch):

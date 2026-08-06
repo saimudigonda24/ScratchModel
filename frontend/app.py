@@ -529,16 +529,34 @@ with tabs[2]:
         selected = st.selectbox("Report", labels, index=0)
         report = reports[labels.index(selected)]
         report_body = report.get("markdown", "")
+        report_json = report.get("report", {})
+        scenario_def = report_json.get("scenario_definition", {})
         st.caption(f"Run ID: {report.get('run_id')} | Run date: {format_dashboard_timestamp(report.get('created_at'))}")
         st.caption(format_relative_freshness(report.get("created_at")))
+        meta_cols = st.columns(4)
+        meta_cols[0].metric("Scenario", scenario_def.get("name", "Unknown"))
+        meta_cols[1].metric("Data Mode", report_json.get("data_mode", "Unknown"))
+        meta_cols[2].metric("Approval", "Pending" if report_json.get("approval_status", {}).get("pending_content") else "Approved")
+        meta_cols[3].metric("Horizon", scenario_def.get("time_horizon", "n/a"))
         st.download_button("Export Markdown", report_body, file_name=f"{report.get('run_id')}_ic_report.md", mime="text/markdown")
         st.info("PDF-ready view: use your browser print command and choose Save as PDF.")
-        status = report.get("report", {}).get("approval_status", {})
+        status = report_json.get("approval_status", {})
         if status:
             cols = st.columns(2)
             cols[0].metric("Approved Items", len(status.get("approved_content", [])))
             cols[1].metric("Pending Items", len(status.get("pending_content", [])))
-        st.markdown(report_body)
+        st.subheader("Executive View")
+        st.write(report_json.get("executive_outlook") or "Not enough information to populate this section.")
+        with st.expander("Detailed IC Memo", expanded=True):
+            st.markdown(report_body)
+        with st.expander("Traceability Viewer"):
+            table(
+                report_json.get("traceability", []),
+                ["conclusion", "supporting_scenario_assumption", "supporting_data_source", "supporting_historical_analog", "supporting_agent_conclusion", "confidence_level"],
+                "No traceability records saved for this report.",
+            )
+        with st.expander("Print-Friendly Notes"):
+            st.markdown("Use the Markdown export for committee packets, or use browser print and Save as PDF for a PDF-ready view.")
 
 with tabs[3]:
     st.header("Historical Analogs")
