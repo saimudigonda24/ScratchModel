@@ -20,6 +20,7 @@ from app.agents import (
 from app.connectors import ingest_all_sources
 from app.models import AgentInput, FinalResearchOutput, HumanReport, MacroThesis, Opportunity
 from app.services.database import save_run
+from app.services.agent_llm import augment_agent_output_with_openai
 from app.services.institutional_memory import retrieve_relevant_lessons
 from app.services.investment_committee_report import generate_investment_committee_report
 from app.services.knowledge_base import KnowledgeBaseService
@@ -61,7 +62,9 @@ class ResearchOrchestrator:
         )
         agent_outputs: list[dict] = []
 
-        thesis_output = MacroThesisAgent().run(agent_input)
+        thesis_agent = MacroThesisAgent()
+        thesis_output = thesis_agent.run(agent_input)
+        thesis_output = augment_agent_output_with_openai(thesis_agent.name, thesis_agent.system_prompt, agent_input, thesis_output)
         agent_outputs.append(thesis_output.model_dump(mode="json"))
         thesis = agent_input.context.get("thesis")
         if not isinstance(thesis, MacroThesis):
@@ -82,6 +85,7 @@ class ResearchOrchestrator:
         evidence: list[str] = []
         for agent in asset_agents:
             output = agent.run(agent_input)
+            output = augment_agent_output_with_openai(agent.name, agent.system_prompt, agent_input, output)
             agent_outputs.append(output.model_dump(mode="json"))
             opportunities.extend(output.opportunities)
             for finding in output.findings:

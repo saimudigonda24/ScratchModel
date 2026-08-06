@@ -5,7 +5,6 @@ from app.connectors.cme_fedwatch import CMEFedWatchConnector
 from app.connectors.fred import FREDConnector
 from app.connectors.imf import IMFConnector
 from app.connectors.sec_edgar import SECEdgarConnector
-from app.connectors.trading_economics import TradingEconomicsConnector
 from app.connectors.world_bank import WorldBankConnector
 from app.connectors.yahoo_finance import YahooFinanceConnector
 from app.models import DataSignal, MacroDataSnapshot
@@ -24,7 +23,6 @@ class MarketDataService:
         self.sec = SECEdgarConnector()
         self.world_bank = WorldBankConnector()
         self.imf = IMFConnector()
-        self.trading_economics = TradingEconomicsConnector()
 
     def _collect(self, connectors) -> list[DataSignal]:
         signals: list[DataSignal] = []
@@ -33,10 +31,10 @@ class MarketDataService:
         return signals
 
     def get_growth_data(self) -> list[DataSignal]:
-        return self._collect([self.bea, self.world_bank, self.imf, self.trading_economics])
+        return self._collect([self.bea, self.census, self.world_bank, self.imf])
 
     def get_inflation_data(self) -> list[DataSignal]:
-        return self._collect([self.fred, self.trading_economics])
+        return self._collect([self.fred, self.bls])
 
     def get_rates_data(self) -> list[DataSignal]:
         return self._collect([self.fred, self.cme])
@@ -51,25 +49,18 @@ class MarketDataService:
         return self._collect([self.yahoo, self.sec])
 
     def get_fx_data(self) -> list[DataSignal]:
-        return self._collect([self.trading_economics, self.fred])
+        return self._collect([self.fred, self.yahoo])
 
     def get_commodity_data(self) -> list[DataSignal]:
-        return self._collect([self.trading_economics, self.imf])
+        return self._collect([self.yahoo, self.imf])
 
     def get_crypto_data(self) -> list[DataSignal]:
-        return [
-            DataSignal(
-                source="Market Data Service",
-                name="Crypto data",
-                value="unavailable",
-                as_of="latest",
-                direction="neutral",
-                interpretation="No approved crypto connector configured yet. Add a licensed connector before using crypto data in production.",
-            )
+        return [signal for signal in self.yahoo.fetch_signals() if "BTC-USD" in signal.name] or [
+            self.yahoo.unavailable_signal("BTC-USD", "Yahoo Finance crypto proxy unavailable")
         ]
 
     def get_global_macro_data(self) -> list[DataSignal]:
-        return self._collect([self.world_bank, self.imf, self.trading_economics])
+        return self._collect([self.world_bank, self.imf])
 
     def get_all_data(self) -> MacroDataSnapshot:
         connectors = [
@@ -82,7 +73,6 @@ class MarketDataService:
             self.sec,
             self.world_bank,
             self.imf,
-            self.trading_economics,
         ]
         signals: list[DataSignal] = []
         source_status: dict[str, str] = {}

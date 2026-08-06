@@ -29,3 +29,7 @@ def test_system_monitor_smoke_layout_sections_present():
     assert "Scenario Comparison Readiness" in source
     assert "Training & Evaluation Controls" in source
     assert "format_dashboard_timestamp" in source
+    assert "✓ Connected" in source
+    assert "⚠ Fallback" in source
+    assert "✗ Error" in source
+    assert "○ Untested" in source

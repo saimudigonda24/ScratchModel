@@ -10,7 +10,16 @@ load_env()
 
 
 def real_llm_enabled() -> bool:
-    return os.getenv("HCP_USE_REAL_LLM", "false").lower() == "true"
+    return os.getenv("HCP_USE_REAL_LLM", "true").lower() == "true"
+
+
+def safe_llm_error(exc: Exception) -> str:
+    text = str(exc) or exc.__class__.__name__
+    for env_var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"):
+        secret = os.getenv(env_var)
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    return text
 
 
 @dataclass
@@ -92,7 +101,7 @@ class OpenAIClient(BaseLLMClient):
             )
         except Exception as exc:
             fallback = MockLLMClient(self.provider).complete(system_prompt, user_prompt, model or self.default_model)
-            fallback.error = str(exc)
+            fallback.error = safe_llm_error(exc)
             return fallback
 
 
@@ -128,7 +137,7 @@ class AnthropicClient(BaseLLMClient):
             return LLMResponse(provider=self.provider, model=model or self.default_model, content=content, raw=payload)
         except Exception as exc:
             fallback = MockLLMClient(self.provider).complete(system_prompt, user_prompt, model or self.default_model)
-            fallback.error = str(exc)
+            fallback.error = safe_llm_error(exc)
             return fallback
 
 
@@ -161,7 +170,7 @@ class GeminiClient(BaseLLMClient):
             return LLMResponse(provider=self.provider, model=selected_model, content=content, raw=payload)
         except Exception as exc:
             fallback = MockLLMClient(self.provider).complete(system_prompt, user_prompt, model or self.default_model)
-            fallback.error = str(exc)
+            fallback.error = safe_llm_error(exc)
             return fallback
 
 

@@ -5,6 +5,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.connectors.fred import FREDConnector
+from app.connectors.bea import BEAConnector
+from app.connectors.bls import BLSConnector
+from app.connectors.census import CensusConnector
 from app.connectors.sec_edgar import SECEdgarConnector
 from app.connectors.world_bank import WorldBankConnector
 from app.connectors.yahoo_finance import YahooFinanceConnector
@@ -118,3 +121,75 @@ def test_fred_status_formatting_for_live_and_fallback(monkeypatch):
     assert fallback["message"].startswith("Fallback Mode")
     assert "configured-key" not in str(live)
     assert "configured-key" not in str(fallback)
+
+
+def test_bls_parses_representative_live_series(monkeypatch):
+    monkeypatch.setenv("BLS_API_KEY", "secret-bls-key")
+    connector = BLSConnector()
+
+    def fake_fetch_json(url, params=None, headers=None):
+        return {
+            "payload": {
+                "status": "REQUEST_SUCCEEDED",
+                "Results": {"series": [{"data": [{"year": "2026", "periodName": "July", "value": "321.5"}]}]},
+            }
+        }
+
+    monkeypatch.setattr(connector, "fetch_json", fake_fetch_json)
+    signals = connector.fetch_signals()
+
+    assert [signal.name for signal in signals] == [
+        "Consumer Price Index",
+        "Producer Price Index Final Demand",
+        "Nonfarm Payrolls",
+    ]
+    assert all(signal.value == "321.5" for signal in signals)
+    assert "secret-bls-key" not in str(signals)
+
+
+def test_bea_parses_gdp_and_personal_income(monkeypatch):
+    monkeypatch.setenv("BEA_API_KEY", "secret-bea-key")
+    connector = BEAConnector()
+
+    def fake_fetch_json(url, params=None, headers=None):
+        return {
+            "payload": {
+                "BEAAPI": {
+                    "Results": {"Data": [{"TimePeriod": "2026Q2", "DataValue": "23456.7"}]},
+                }
+            }
+        }
+
+    monkeypatch.setattr(connector, "fetch_json", fake_fetch_json)
+    signals = connector.fetch_signals()
+
+    assert [signal.name for signal in signals] == ["Real GDP", "Personal Income"]
+    assert all(signal.value == "23456.7" for signal in signals)
+    assert "secret-bea-key" not in str(signals)
+
+
+def test_census_requires_key_and_parses_representative_series(monkeypatch):
+    monkeypatch.delenv("CENSUS_API_KEY", raising=False)
+    connector = CensusConnector()
+    missing = connector.fetch_signals()
+    assert missing[0].value == "unavailable"
+    assert "CENSUS_API_KEY" in missing[0].interpretation
+
+    monkeypatch.setenv("CENSUS_API_KEY", "secret-census-key")
+
+    def fake_fetch_json(url, params=None, headers=None):
+        return {
+            "payload": [
+                ["data_type_code", "seasonally_adj", "category_code", "cell_value", "error_data", "time_slot_id", "time"],
+                ["STARTS", "yes", "STARTS", "1200", "no", "202606", "2026-06"],
+                ["PERMITS", "yes", "PERMITS", "1350", "no", "202607", "2026-07"],
+                ["MRTS", "yes", "44X72", "999", "no", "202608", "2026-08"],
+            ]
+        }
+
+    monkeypatch.setattr(connector, "fetch_json", fake_fetch_json)
+    signals = connector.fetch_signals()
+
+    assert [signal.name for signal in signals] == ["Retail Sales", "Housing Starts", "Building Permits"]
+    assert [signal.value for signal in signals] == ["999", "1200", "1350"]
+    assert "secret-census-key" not in str(signals)

@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.connectors.fred import FREDConnector
+from app.services.llm import OpenAIClient
 from app.services import source_status
 from app.services.source_status import audit_sources, scenario_comparison_readiness, test_source as run_source_test
 
@@ -69,6 +70,20 @@ def test_source_audit_does_not_leak_secret_values(monkeypatch, tmp_path):
 
     for value in secrets.values():
         assert value not in rendered
+
+
+def test_openai_configured_is_connected_by_default(monkeypatch, tmp_path):
+    isolate_source_files(monkeypatch, tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-openai-value")
+    monkeypatch.delenv("HCP_USE_REAL_LLM", raising=False)
+    monkeypatch.setattr(OpenAIClient, "is_available", lambda self: True)
+
+    audit = audit_sources(test_connections=False)
+    openai = record_named(audit, "OpenAI")
+
+    assert openai["mode"] == "Connected"
+    assert openai["reachable"] is True
+    assert "secret-openai-value" not in str(openai)
 
 
 def test_source_audit_unreachable_source_returns_structured_status(monkeypatch, tmp_path):
@@ -138,4 +153,27 @@ def test_comparison_readiness_requires_more_than_fred():
 
     assert readiness["macro_data_readiness"] == "Partially Live"
     assert readiness["overall_status"] != "Ready for Research Comparison"
-    assert "FRED alone is not sufficient" in readiness["note"]
+    assert "TradingEconomics is intentionally excluded" in readiness["note"]
+
+
+def test_comparison_readiness_ready_without_trading_economics():
+    names = [
+        "FRED",
+        "BLS",
+        "BEA",
+        "Census Bureau",
+        "Yahoo Finance",
+        "SEC EDGAR",
+        "World Bank",
+        "IMF",
+        "OpenAI",
+        "TradingEconomics",
+    ]
+    records = [
+        {"source_name": name, "mode": "Unavailable" if name == "TradingEconomics" else "Connected"}
+        for name in names
+    ]
+
+    readiness = scenario_comparison_readiness(records)
+
+    assert readiness["overall_status"] == "Ready for Research Comparison"

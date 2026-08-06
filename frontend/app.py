@@ -118,6 +118,7 @@ def dashboard_table(rows: list[dict[str, Any]], columns: list[str] | None = None
 def source_status_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = []
     for record in records:
+        mode = record.get("mode")
         rows.append(
             {
                 "Source": record.get("source_name"),
@@ -125,12 +126,24 @@ def source_status_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "Connector": "Yes" if record.get("connector_present") else "No",
                 "Configured": "Yes" if record.get("configured") else "No",
                 "Reachable": "Yes" if record.get("reachable") else "No",
-                "Mode": record.get("mode"),
+                "Mode": status_badge(mode),
                 "Last Successful Pull": format_dashboard_timestamp(record.get("last_success")),
                 "Action Needed": record.get("action_needed"),
             }
         )
     return rows
+
+
+def status_badge(mode: str | None) -> str:
+    mapping = {
+        "Connected": "✓ Connected",
+        "Fallback": "⚠ Fallback",
+        "Error": "✗ Error",
+        "Untested": "○ Untested",
+        "Key Needed": "⚠ Key Needed",
+        "Unavailable": "✗ Unavailable",
+    }
+    return mapping.get(str(mode), f"○ {mode or 'Untested'}")
 
 
 def render_outlook(outlook: dict[str, Any]) -> None:

@@ -15,10 +15,10 @@ from app.services.source_status import audit_sources  # noqa: E402
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--test-connections", action="store_true", help="Attempt live connector calls where safe.")
+    parser.add_argument("--no-test-connections", action="store_true", help="Skip live connector probes and report cached/configured status only.")
     args = parser.parse_args()
     load_env()
-    audit = audit_sources(test_connections=args.test_connections)
+    audit = audit_sources(test_connections=not args.no_test_connections)
     print("HCP Data Source & Model Provider Audit")
     print(f"Generated: {audit['generated_at']}")
     print("")
@@ -34,6 +34,8 @@ def main() -> int:
             f"required_env={required}"
         )
         print(f"  data: {row['data_currently_retrieved']}")
+        if row.get("latest_error"):
+            print(f"  latest_error: {row['latest_error']}")
         print(f"  action: {row['action_needed']}")
     print("")
     print("Groups")

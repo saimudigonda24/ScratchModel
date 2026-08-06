@@ -16,6 +16,7 @@ from app.connectors.sec_edgar import SECEdgarConnector
 from app.connectors.trading_economics import TradingEconomicsConnector
 from app.connectors.world_bank import WorldBankConnector
 from app.connectors.yahoo_finance import YahooFinanceConnector
+from app.services.agent_llm import openai_status_probe
 from app.services.llm import AnthropicClient, GeminiClient, OpenAIClient, real_llm_enabled
 
 
@@ -29,22 +30,24 @@ class SourceSpec:
     rate_limit_or_licensing: str
     action_needed_when_missing: str
     stable_endpoint: bool = True
+    required_for_research_readiness: bool = True
+    opted_out: bool = False
 
 
 SOURCE_SPECS: list[SourceSpec] = [
     SourceSpec("FRED", "Macro Data", FREDConnector, ("FRED_API_KEY",), "CPIAUCSL, PCEPI, UNRATE, FEDFUNDS, DGS10, T10Y2Y", "FRED API terms and key-based request limits apply.", "Add FRED_API_KEY to local .env."),
-    SourceSpec("BLS", "Macro Data", BLSConnector, ("BLS_API_KEY",), "Unemployment rate LNS14000000; key optional but recommended.", "Public endpoint has stricter limits without key.", "Optional: add BLS_API_KEY for higher limits."),
-    SourceSpec("BEA", "Macro Data", BEAConnector, ("BEA_API_KEY",), "NIPA Real GDP table T10101.", "BEA key required for reliable production API access.", "Add BEA_API_KEY to local .env."),
-    SourceSpec("Census Bureau", "Macro Data", CensusConnector, ("CENSUS_API_KEY",), "Monthly retail sales from MARTS endpoint; key optional.", "Public endpoint supports optional key and API limits.", "Optional: add CENSUS_API_KEY for higher limits."),
-    SourceSpec("Yahoo Finance", "Market Data", YahooFinanceConnector, tuple(), "S&P 500 chart/momentum proxy and historical prices elsewhere in price service.", "Unofficial endpoint; review licensing before production use.", "No key needed; verify endpoint availability."),
+    SourceSpec("BLS", "Macro Data", BLSConnector, ("BLS_API_KEY",), "CPI, PPI final demand, and nonfarm payrolls.", "BLS API key-based request limits apply.", "Add BLS_API_KEY to local .env."),
+    SourceSpec("BEA", "Macro Data", BEAConnector, ("BEA_API_KEY",), "NIPA real GDP and personal income table data.", "BEA API key-based request limits apply.", "Add BEA_API_KEY to local .env."),
+    SourceSpec("Census Bureau", "Macro Data", CensusConnector, ("CENSUS_API_KEY",), "Retail sales, housing starts, and building permits from EITS datasets.", "Census API key required for current EITS access.", "Add CENSUS_API_KEY to local .env."),
+    SourceSpec("Yahoo Finance", "Market Data", YahooFinanceConnector, tuple(), "SPY, GLD, TLT, and BTC-USD market proxies via yfinance with chart API fallback.", "Unofficial/free market data; review licensing before production use.", "No key needed; verify endpoint availability."),
     SourceSpec("SEC EDGAR", "Company / Filings", SECEdgarConnector, ("SEC_USER_AGENT",), "Recent large-cap filing activity via submissions endpoint.", "SEC requires descriptive User-Agent and fair access behavior.", "Set SEC_USER_AGENT with compliant contact string."),
     SourceSpec("World Bank", "International Macro", WorldBankConnector, tuple(), "World real GDP growth indicator.", "Open API; observe published limits.", "No key needed; verify endpoint availability."),
     SourceSpec("IMF", "International Macro", IMFConnector, tuple(), "IMF real GDP growth data mapper indicator.", "Open endpoint; endpoint format can change.", "No key needed; verify endpoint availability."),
-    SourceSpec("TradingEconomics", "Macro Calendar", TradingEconomicsConnector, ("TRADING_ECONOMICS_API_KEY",), "U.S. macro calendar event count.", "Credentials and plan/licensing required.", "Add TRADING_ECONOMICS_API_KEY if licensed."),
-    SourceSpec("CME FedWatch", "Rates / Policy", CMEFedWatchConnector, tuple(), "No stable unauthenticated JSON endpoint; returns unavailable placeholder.", "Use licensed/approved CME data before production.", "Provide approved CME endpoint or licensed feed.", stable_endpoint=False),
+    SourceSpec("TradingEconomics", "Macro Calendar", TradingEconomicsConnector, tuple(), "Not used by current configuration; paid subscription source intentionally excluded.", "Credentials and paid plan/licensing required.", "No action required unless you later choose to license TradingEconomics.", stable_endpoint=False, required_for_research_readiness=False, opted_out=True),
+    SourceSpec("CME FedWatch", "Rates / Policy", CMEFedWatchConnector, tuple(), "No stable unauthenticated JSON endpoint; returns unavailable placeholder.", "Use licensed/approved CME data before production.", "Provide approved CME endpoint or licensed feed.", stable_endpoint=False, required_for_research_readiness=False),
     SourceSpec("OpenAI", "Model Provider", None, ("OPENAI_API_KEY",), "Chat completion slot for model debate when real LLM mode is enabled.", "Provider API pricing and data policies apply.", "Add OPENAI_API_KEY and set HCP_USE_REAL_LLM=true."),
-    SourceSpec("Anthropic", "Model Provider", None, ("ANTHROPIC_API_KEY",), "Claude provider slot for model debate when real LLM mode is enabled.", "Provider API pricing and data policies apply.", "Add ANTHROPIC_API_KEY and set HCP_USE_REAL_LLM=true."),
-    SourceSpec("Gemini / Google", "Model Provider", None, ("GOOGLE_API_KEY",), "Gemini provider slot for model debate when real LLM mode is enabled.", "Provider API pricing and data policies apply.", "Add GOOGLE_API_KEY and set HCP_USE_REAL_LLM=true."),
+    SourceSpec("Anthropic", "Model Provider", None, ("ANTHROPIC_API_KEY",), "Optional Claude provider slot for model debate.", "Provider API pricing and data policies apply.", "Optional: add ANTHROPIC_API_KEY for provider diversity.", required_for_research_readiness=False),
+    SourceSpec("Gemini / Google", "Model Provider", None, ("GOOGLE_API_KEY",), "Optional Gemini provider slot for model debate.", "Provider API pricing and data policies apply.", "Optional: add GOOGLE_API_KEY for provider diversity.", required_for_research_readiness=False),
 ]
 
 
@@ -73,7 +76,7 @@ def scenario_comparison_readiness(records: list[dict[str, Any]]) -> dict[str, An
 
     macro_sources = ["FRED", "BLS", "BEA", "Census Bureau"]
     international = ["World Bank", "IMF"]
-    model_sources = ["OpenAI", "Anthropic", "Gemini / Google"]
+    model_sources = ["OpenAI"]
     readiness = {
         "macro_data_readiness": _readiness_label(sum(live(name) for name in macro_sources), len(macro_sources)),
         "market_price_readiness": "Ready" if live("Yahoo Finance") else "Demo/Fallback",
@@ -83,14 +86,14 @@ def scenario_comparison_readiness(records: list[dict[str, Any]]) -> dict[str, An
         "historical_analog_readiness": "Ready" if RAW_ROOT.exists() else "Demo library only",
     }
     strong_count = sum(value in {"Ready", "Mostly Ready"} for value in readiness.values())
-    if strong_count >= 5:
+    if strong_count >= 5 and readiness["macro_data_readiness"] in {"Ready", "Mostly Ready"} and readiness["model_debate_readiness"] == "Ready":
         overall = "Ready for Research Comparison"
-    elif strong_count >= 2:
+    elif strong_count >= 2 or readiness["macro_data_readiness"] in {"Partially Live", "Mostly Ready"}:
         overall = "Partially Live"
     else:
         overall = "Demo Only"
     readiness["overall_status"] = overall
-    readiness["note"] = "FRED alone is not sufficient for live scenario comparisons; market, international, filing, and model coverage also matter."
+    readiness["note"] = "TradingEconomics is intentionally excluded. Readiness is based on FRED, BLS, BEA, Census, Yahoo Finance, SEC EDGAR, World Bank, IMF, and OpenAI."
     return readiness
 
 
@@ -101,16 +104,26 @@ def _source_record(spec: SourceSpec, test_connections: bool) -> dict[str, Any]:
     reachable = bool(latest_success)
     latest_error = None
     mode = _initial_mode(spec, configured, reachable)
-    if spec.source_name == "FRED":
+    if spec.opted_out:
+        mode = "Unavailable"
+        reachable = False
+        latest_error = "source intentionally excluded from current configuration"
+    elif spec.source_name == "FRED":
         status = FREDConnector().health_status()
         reachable = bool(status.get("reachable"))
         latest_success = status.get("latest_successful_pull") or latest_success
         mode = "Connected" if status.get("mode") == "live" and reachable else "Fallback" if configured else "Key Needed"
         latest_error = None if reachable else status.get("message")
     elif spec.category == "Model Provider":
-        reachable = _model_available(spec.source_name)
-        mode = "Connected" if reachable else "Key Needed" if not configured else "Fallback"
-        latest_error = None if reachable else ("HCP_USE_REAL_LLM=false" if configured and not real_llm_enabled() else None)
+        if test_connections and spec.source_name == "OpenAI":
+            probe = openai_status_probe()
+            reachable = bool(probe.get("reachable"))
+            mode = probe.get("mode", "Fallback")
+            latest_error = probe.get("latest_error")
+        else:
+            reachable = _model_available(spec.source_name)
+            mode = "Connected" if reachable else "Key Needed" if not configured else "Fallback"
+            latest_error = None if reachable else ("HCP_USE_REAL_LLM=false" if configured and not real_llm_enabled() else None)
     elif test_connections and connector_present:
         mode, reachable, latest_success, latest_error = _test_connector(spec, configured, latest_success)
     action = _action_needed(spec, configured, reachable, mode)
@@ -127,13 +140,14 @@ def _source_record(spec: SourceSpec, test_connections: bool) -> dict[str, Any]:
         "action_needed": action,
         "data_currently_retrieved": spec.data_currently_retrieved,
         "rate_limit_or_licensing": spec.rate_limit_or_licensing,
+        "required_for_research_readiness": spec.required_for_research_readiness,
     }
 
 
 def _test_connector(spec: SourceSpec, configured: bool, latest_success: str | None) -> tuple[str, bool, str | None, str | None]:
     if not spec.stable_endpoint:
         return "Unavailable", False, latest_success, "No stable unauthenticated endpoint configured"
-    if spec.required_environment_variables and not configured and spec.source_name not in {"BLS", "Census Bureau"}:
+    if spec.required_environment_variables and not configured:
         return "Key Needed", False, latest_success, "required credential missing"
     previous_real_data = os.environ.get("HCP_USE_REAL_DATA")
     os.environ["HCP_USE_REAL_DATA"] = "true"
@@ -170,7 +184,7 @@ def _initial_mode(spec: SourceSpec, configured: bool, reachable: bool) -> str:
         return "Connected"
     if not spec.stable_endpoint:
         return "Unavailable"
-    if spec.required_environment_variables and not configured and spec.source_name not in {"BLS", "Census Bureau"}:
+    if spec.required_environment_variables and not configured:
         return "Key Needed"
     return "Untested"
 
@@ -180,7 +194,7 @@ def _action_needed(spec: SourceSpec, configured: bool, reachable: bool, mode: st
         return "None."
     if mode == "Unavailable":
         return spec.action_needed_when_missing
-    if spec.required_environment_variables and not configured and spec.source_name not in {"BLS", "Census Bureau"}:
+    if spec.required_environment_variables and not configured:
         return spec.action_needed_when_missing
     if spec.category == "Model Provider" and configured and not real_llm_enabled():
         return "Set HCP_USE_REAL_LLM=true when ready to use live provider calls."

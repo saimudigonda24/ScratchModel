@@ -4,6 +4,7 @@ from typing import Any
 
 from app.models import FinalResearchOutput
 from app.services.database import list_investment_committee_reports, save_investment_committee_report
+from app.services.llm import OpenAIClient
 
 ROOT = Path(__file__).resolve().parents[3]
 IC_REPORT_DIR = ROOT / "reports" / "investment_committee"
@@ -39,6 +40,7 @@ def generate_investment_committee_report(
         "indicators_to_watch": [signal.model_dump(mode="json") for signal in thesis.key_signals],
         "confidence_score": result.conviction_score,
         "invalidation_conditions": result.triggers,
+        "openai_research_overlay": _openai_report_overlay(result),
         "disclaimer": result.disclaimer,
     }
     markdown = _to_markdown(report)
@@ -87,6 +89,7 @@ def _to_markdown(report: dict[str, Any]) -> str:
         ("Indicators To Watch", report["indicators_to_watch"]),
         ("Confidence Score", report["confidence_score"]),
         ("Invalidation Conditions", report["invalidation_conditions"]),
+        ("OpenAI Research Overlay", report["openai_research_overlay"]),
     ]
     for title, value in sections:
         lines.extend([f"## {title}", _render_value(value), ""])
@@ -102,3 +105,25 @@ def _render_value(value: Any) -> str:
     if isinstance(value, dict):
         return "\n".join(f"- {key}: {item}" for key, item in value.items())
     return str(value)
+
+
+def _openai_report_overlay(result: FinalResearchOutput) -> str:
+    client = OpenAIClient()
+    prompt = "\n".join(
+        [
+            f"Thesis: {result.thesis.title}",
+            f"Base case: {result.thesis.base_case.summary}",
+            f"Top opportunities: {', '.join(item.name for item in result.ranked_opportunities[:5])}",
+            f"Top hedges: {', '.join(item.name for item in result.ranked_hedge_ideas[:3])}",
+            "Write a concise investment committee quality-control overlay: key agreement, key risk, and one review question.",
+        ]
+    )
+    response = client.complete(
+        "You are the HCP investment committee report reviewer. Research only; no trade execution.",
+        prompt,
+    )
+    mode = "fallback" if response.used_fallback else "live"
+    suffix = f"Provider mode: {mode}; model: {response.model}."
+    if response.error:
+        suffix = f"{suffix} Provider error: {response.error[:180]}."
+    return f"{response.content}\n\n{suffix}"
