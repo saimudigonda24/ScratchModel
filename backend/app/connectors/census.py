@@ -6,9 +6,14 @@ class CensusConnector(HTTPMarketDataConnector):
     source_name = "Census Bureau"
 
     def fetch_signals(self) -> list[DataSignal]:
+        import os
+
+        params = {"get": "cell_value,time_slot_id", "for": "us:*", "NAICS": "44X72"}
+        if os.getenv("CENSUS_API_KEY"):
+            params["key"] = os.getenv("CENSUS_API_KEY")
         data = self.fetch_json(
             "https://api.census.gov/data/timeseries/eits/marts",
-            {"get": "cell_value,time_slot_id", "for": "us:*", "NAICS": "44X72"},
+            params,
         )
         if data.get("unavailable"):
             return [self.unavailable_signal("Retail Sales", data.get("reason", "request unavailable"))]
@@ -27,4 +32,3 @@ class CensusConnector(HTTPMarketDataConnector):
             ]
         except Exception as exc:
             return [self.unavailable_signal("Retail Sales", f"normalization failed: {exc}")]
-

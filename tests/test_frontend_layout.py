@@ -25,4 +25,7 @@ def test_system_monitor_smoke_layout_sections_present():
     assert 'with st.expander("Scheduled Jobs")' in source
     assert 'with st.expander("Technical Details")' in source
     assert "FRED Connection" in source
+    assert "Data Sources & Model Providers" in source
+    assert "Scenario Comparison Readiness" in source
     assert "Training & Evaluation Controls" in source
+    assert "format_dashboard_timestamp" in source

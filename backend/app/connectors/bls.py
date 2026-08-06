@@ -6,9 +6,14 @@ class BLSConnector(HTTPMarketDataConnector):
     source_name = "BLS"
 
     def fetch_signals(self) -> list[DataSignal]:
+        params = {"latest": "true"}
+        import os
+
+        if os.getenv("BLS_API_KEY"):
+            params["registrationkey"] = os.getenv("BLS_API_KEY")
         data = self.fetch_json(
             "https://api.bls.gov/publicAPI/v2/timeseries/data/LNS14000000",
-            {"latest": "true"},
+            params,
         )
         if data.get("unavailable"):
             return [self.unavailable_signal("Unemployment Rate", data.get("reason", "request unavailable"))]
@@ -26,4 +31,3 @@ class BLSConnector(HTTPMarketDataConnector):
             ]
         except Exception as exc:
             return [self.unavailable_signal("Unemployment Rate", f"normalization failed: {exc}")]
-

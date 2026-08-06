@@ -3,10 +3,13 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import pandas as pd
 import requests
 import streamlit as st
+
+from time_utils import format_dashboard_timestamp, format_relative_freshness
 
 
 API_URL = os.getenv("HCP_API_URL", "http://localhost:8000")
@@ -42,6 +45,7 @@ def run_local_command(args: list[str]) -> dict[str, Any]:
 def refresh_artifacts() -> None:
     st.session_state.signals = api_get("/signals", {"signals": [], "source_status": {}})
     st.session_state.fred_health = api_get("/health/fred", {})
+    st.session_state.source_audit = api_get("/system/source-status", {"records": [], "comparison_readiness": {}})
     st.session_state.reports = api_get("/history/reports", [])
     st.session_state.thesis_history = api_get("/history/thesis", [])
     st.session_state.debates = api_get("/history/debates", [])
@@ -94,6 +98,39 @@ def table(rows: list[dict[str, Any]], columns: list[str] | None = None, empty: s
         existing = [column for column in columns if column in frame.columns]
         frame = frame[existing]
     st.dataframe(frame, use_container_width=True, hide_index=True)
+
+
+def format_timestamp_columns(rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+    formatted = []
+    for row in rows:
+        item = dict(row)
+        for field in fields:
+            if field in item:
+                item[field] = format_dashboard_timestamp(item.get(field))
+        formatted.append(item)
+    return formatted
+
+
+def dashboard_table(rows: list[dict[str, Any]], columns: list[str] | None = None, empty: str = "No records available yet.") -> None:
+    table(format_timestamp_columns(rows, ["created_at", "updated_at", "approved_at", "rejected_at"]), columns, empty)
+
+
+def source_status_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = []
+    for record in records:
+        rows.append(
+            {
+                "Source": record.get("source_name"),
+                "Category": record.get("category"),
+                "Connector": "Yes" if record.get("connector_present") else "No",
+                "Configured": "Yes" if record.get("configured") else "No",
+                "Reachable": "Yes" if record.get("reachable") else "No",
+                "Mode": record.get("mode"),
+                "Last Successful Pull": format_dashboard_timestamp(record.get("last_success")),
+                "Action Needed": record.get("action_needed"),
+            }
+        )
+    return rows
 
 
 def render_outlook(outlook: dict[str, Any]) -> None:
@@ -362,7 +399,7 @@ with tabs[0]:
     phases = (st.session_state.get("scenario_lab") or {}).get("phases", [])
     if phases:
         with st.expander("Reopen / Copy Previous Scenario"):
-            labels = [f"{row.get('created_at')} | {row.get('scenario', {}).get('scenario_name')}" for row in phases]
+            labels = [f"{format_dashboard_timestamp(row.get('created_at'))} | {row.get('scenario', {}).get('scenario_name')}" for row in phases]
             selected = st.selectbox("Saved scenario", labels)
             if st.button("Copy Selected Scenario Into Editor"):
                 st.session_state.scenario_builder = dict(phases[labels.index(selected)].get("scenario", {}))
@@ -400,11 +437,12 @@ with tabs[2]:
     if not reports:
         st.info("No investment committee report yet. Generate an HCP Outlook from the Scenario Lab first.")
     else:
-        labels = [f"{row.get('created_at', '')[:19]} | {row.get('run_id')}" for row in reports]
+        labels = [f"{format_dashboard_timestamp(row.get('created_at'))} | {row.get('run_id')}" for row in reports]
         selected = st.selectbox("Report", labels, index=0)
         report = reports[labels.index(selected)]
         report_body = report.get("markdown", "")
-        st.caption(f"Run ID: {report.get('run_id')} | Run date: {report.get('created_at')}")
+        st.caption(f"Run ID: {report.get('run_id')} | Run date: {format_dashboard_timestamp(report.get('created_at'))}")
+        st.caption(format_relative_freshness(report.get("created_at")))
         st.download_button("Export Markdown", report_body, file_name=f"{report.get('run_id')}_ic_report.md", mime="text/markdown")
         st.info("PDF-ready view: use your browser print command and choose Save as PDF.")
         status = report.get("report", {}).get("approval_status", {})
@@ -496,8 +534,8 @@ with tabs[5]:
         st.info("Ranking evaluation appears after enough outcome-evaluated recommendations exist.")
 
     st.subheader("Outcome Tables")
-    table(outcomes.get("opportunity_outcomes", []), None, "No opportunity outcomes calculated yet.")
-    table(outcomes.get("hedge_outcomes", []), None, "No hedge outcomes calculated yet.")
+    dashboard_table(outcomes.get("opportunity_outcomes", []), None, "No opportunity outcomes calculated yet.")
+    dashboard_table(outcomes.get("hedge_outcomes", []), None, "No hedge outcomes calculated yet.")
     st.subheader("Calibration Report")
     if st.session_state.get("latest_calibration"):
         st.json(st.session_state.latest_calibration)
@@ -540,7 +578,7 @@ with tabs[6]:
         refresh_artifacts()
     if st.session_state.get("import_result"):
         st.success(f"Imported document: {st.session_state.import_result.get('document_id')}")
-    table(st.session_state.get("institutional_documents", []), None, "No historical HCP reports imported yet.")
+    dashboard_table(st.session_state.get("institutional_documents", []), None, "No historical HCP reports imported yet.")
 
 with tabs[7]:
     st.header("System Monitor")
@@ -554,8 +592,10 @@ with tabs[7]:
                 return row.get("finished_at") or row.get("started_at") or "never"
         return "never"
 
-    cols[0].metric("Last Price Ingestion", latest_for("daily_price_ingestion"))
-    cols[1].metric("Last Outcome Eval", latest_for("horizon_based_outcome_evaluation"))
+    cols[0].metric("Last Price Ingestion", format_dashboard_timestamp(latest_for("daily_price_ingestion")))
+    cols[0].caption(format_relative_freshness(latest_for("daily_price_ingestion")))
+    cols[1].metric("Last Outcome Eval", format_dashboard_timestamp(latest_for("horizon_based_outcome_evaluation")))
+    cols[1].caption(format_relative_freshness(latest_for("horizon_based_outcome_evaluation")))
     cols[2].metric("Failed Jobs", len(scheduler.get("failed_jobs", [])))
     cols[3].metric("IC Reports", len(st.session_state.get("ic_reports", [])))
 
@@ -565,18 +605,61 @@ with tabs[7]:
     c1.metric("Configured", "yes" if fred.get("configured") else "no")
     c2.metric("Reachable", "yes" if fred.get("reachable") else "no")
     c3.metric("Mode", fred.get("mode", "fallback"))
-    c4.metric("Latest Pull", fred.get("latest_successful_pull") or "never")
+    c4.metric("Latest Pull", format_dashboard_timestamp(fred.get("latest_successful_pull")))
+    c4.caption(format_relative_freshness(fred.get("latest_successful_pull")))
     message = fred.get("message", "FRED status unavailable")
     if message.startswith("Live Data Mode"):
         st.success(message.replace("Live Data Mode - FRED connected", "Live Data Mode — FRED connected"))
     else:
         st.warning(message)
 
+    st.subheader("Data Sources & Model Providers")
+    audit = st.session_state.get("source_audit", {"records": [], "comparison_readiness": {}})
+    source_rows = source_status_rows(audit.get("records", []))
+    table(
+        source_rows,
+        ["Source", "Category", "Connector", "Configured", "Reachable", "Mode", "Last Successful Pull", "Action Needed"],
+        "No source audit data available yet.",
+    )
+    c1, c2, c3 = st.columns([1, 1, 2])
+    if c1.button("Refresh Status", use_container_width=True):
+        st.session_state.source_audit = api_get("/system/source-status", {"records": [], "comparison_readiness": {}})
+        st.rerun()
+    if c2.button("Test All Sources", use_container_width=True):
+        st.session_state.source_audit = api_post("/system/source-status/test-all", {}, {"records": [], "comparison_readiness": {}})
+        st.rerun()
+    source_names = [row.get("source_name") for row in audit.get("records", [])]
+    if source_names:
+        selected_source = c3.selectbox("Source to test", source_names)
+        if st.button("Test Connection", use_container_width=True):
+            result = api_post(f"/system/source-status/test/{quote(selected_source, safe='')}", {}, {})
+            st.session_state.single_source_test = result
+            st.session_state.source_audit = api_get("/system/source-status", {"records": [], "comparison_readiness": {}})
+            st.rerun()
+    if st.session_state.get("single_source_test"):
+        st.info(f"Latest source test: {st.session_state.single_source_test.get('source_name')} — {st.session_state.single_source_test.get('mode')}")
+
+    st.subheader("Scenario Comparison Readiness")
+    readiness = audit.get("comparison_readiness", {})
+    st.metric("Overall Status", readiness.get("overall_status", "Demo Only"))
+    readiness_rows = [
+        {"Area": key.replace("_", " ").title(), "Status": value}
+        for key, value in readiness.items()
+        if key not in {"overall_status", "note"}
+    ]
+    table(readiness_rows, ["Area", "Status"], "No readiness data available yet.")
+    if readiness.get("note"):
+        st.caption(readiness["note"])
+
     with st.expander("Scheduled Jobs"):
-        table(scheduler.get("durable_jobs", []), None, "No scheduled jobs configured yet.")
+        scheduled_jobs = format_timestamp_columns(
+            scheduler.get("durable_jobs", []),
+            ["next_run_time", "last_success_time", "last_failure_time", "created_at", "updated_at"],
+        )
+        table(scheduled_jobs, None, "No scheduled jobs configured yet.")
         for job in scheduler.get("durable_jobs", []):
             c1, c2, c3 = st.columns([3, 1, 1])
-            c1.write(f"{job.get('job_name')} | next: {job.get('next_run_time')} | retries: {job.get('retry_count')}")
+            c1.write(f"{job.get('job_name')} | next: {format_dashboard_timestamp(job.get('next_run_time'))} | retries: {job.get('retry_count')}")
             if c2.button("Run", key=f"run_{job.get('job_name')}"):
                 api_post(f"/system/scheduler/run-job/{job.get('job_name')}", {"dry_run": False})
                 refresh_artifacts()

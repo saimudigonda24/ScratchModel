@@ -55,6 +55,7 @@ from app.services.scenario_presentation import (
     scenario_input_options,
     scenario_summary,
 )
+from app.services.source_status import audit_sources, test_source
 from app.services import run_research_workflow
 from app.services.storage import write_jsonl
 
@@ -85,6 +86,21 @@ def health() -> dict:
 @app.get("/health/fred")
 def fred_health() -> dict:
     return MarketDataService().fred_status()
+
+
+@app.get("/system/source-status")
+def source_status() -> dict:
+    return audit_sources(test_connections=False)
+
+
+@app.post("/system/source-status/test-all")
+def source_status_test_all() -> dict:
+    return audit_sources(test_connections=True)
+
+
+@app.post("/system/source-status/test/{source_name}")
+def source_status_test_source(source_name: str) -> dict:
+    return test_source(source_name)
 
 
 @app.get("/signals", response_model=MacroDataSnapshot)
