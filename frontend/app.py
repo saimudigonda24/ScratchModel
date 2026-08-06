@@ -449,8 +449,11 @@ with tabs[4]:
         approvals = st.session_state.get("approvals", [])
         if approvals:
             for item in approvals:
-                with st.expander(f"{item['name']} | {item['item_type']} | {item['approval_status']}"):
-                    st.markdown(f"**{item['name']}** | {item['item_type']} | {item['approval_status']}")
+                with st.container(border=True):
+                    status_cols = st.columns([3, 1, 1])
+                    status_cols[0].markdown(f"**{item['name']}**")
+                    status_cols[1].caption(item["item_type"])
+                    status_cols[2].caption(item["approval_status"])
                     st.write(item.get("reason", ""))
                     cols = st.columns(3)
                     if cols[0].button("Approve", key=f"approve_{item['id']}"):
