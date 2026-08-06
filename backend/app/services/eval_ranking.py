@@ -7,9 +7,16 @@ correlation would mix time-series drift into cross-sectional skill.
 from __future__ import annotations
 
 import json
+import os
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+
+os.environ.setdefault("PANDAS_USE_NUMEXPR", "0")
+os.environ.setdefault("PANDAS_USE_BOTTLENECK", "0")
+sys.modules.setdefault("numexpr", None)
+sys.modules.setdefault("bottleneck", None)
 
 import numpy as np
 import pandas as pd

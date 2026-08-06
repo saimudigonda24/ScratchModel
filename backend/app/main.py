@@ -46,6 +46,7 @@ from app.services.scenario_lab import (
     scenario_comparison_matrix,
     scenario_lab_dashboard_data,
 )
+from app.services.scenario_presentation import DEMO_SCENARIO, generate_presentation_outlook, safe_generate_presentation_outlook
 from app.services import run_research_workflow
 from app.services.storage import write_jsonl
 
@@ -312,6 +313,28 @@ def scenario_lab() -> dict:
 @app.post("/scenario-lab/demo")
 def scenario_lab_demo() -> dict:
     return create_demo_three_phase_sequence()
+
+
+@app.post("/scenario-lab/outlook")
+def scenario_lab_outlook(payload: dict) -> dict:
+    return safe_generate_presentation_outlook(
+        payload.get("scenario", payload),
+        sequence_name=payload.get("sequence_name", "Manager Demo Scenario"),
+        sequence_description=payload.get("sequence_description", "Presentation-ready scenario workflow."),
+        phase_number=int(payload.get("phase_number", 1)),
+        demo=bool(payload.get("demo", False)),
+    )
+
+
+@app.post("/scenario-lab/demo-outlook")
+def scenario_lab_demo_outlook() -> dict:
+    return generate_presentation_outlook(
+        DEMO_SCENARIO,
+        sequence_name="Inflation Surprise Cycle",
+        sequence_description="Presentation demo based on HCP's Phase 1 inflation surprise cycle.",
+        phase_number=1,
+        demo=True,
+    )
 
 
 @app.post("/scenario-lab/sequences")
