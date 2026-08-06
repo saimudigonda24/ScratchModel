@@ -41,6 +41,7 @@ def run_local_command(args: list[str]) -> dict[str, Any]:
 
 def refresh_artifacts() -> None:
     st.session_state.signals = api_get("/signals", {"signals": [], "source_status": {}})
+    st.session_state.fred_health = api_get("/health/fred", {})
     st.session_state.reports = api_get("/history/reports", [])
     st.session_state.thesis_history = api_get("/history/thesis", [])
     st.session_state.debates = api_get("/history/debates", [])
@@ -72,8 +73,13 @@ def load_training_dataset_preview(limit: int = 5) -> dict[str, Any]:
 def data_mode_from_state() -> str:
     outlook = st.session_state.get("scenario_outlook") or {}
     if outlook.get("data_mode"):
-        return outlook["data_mode"]
+        return outlook["data_mode"].replace("Live Data Mode - FRED connected", "Live Data Mode — FRED connected")
+    fred = st.session_state.get("fred_health") or {}
+    if fred.get("configured") and fred.get("reachable") and fred.get("mode") == "live":
+        return "Live Data Mode — FRED connected"
     statuses = (st.session_state.get("signals") or {}).get("source_status", {})
+    if "connected" in str(statuses.get("FRED", "")).lower():
+        return "Live Data Mode — FRED connected"
     if statuses and all("ok" in str(value).lower() for value in statuses.values()):
         return "Live Data Mode"
     return "Demo Mode: Some outputs are based on fallback data and should not be treated as live investment research."
@@ -549,6 +555,19 @@ with tabs[7]:
     cols[1].metric("Last Outcome Eval", latest_for("horizon_based_outcome_evaluation"))
     cols[2].metric("Failed Jobs", len(scheduler.get("failed_jobs", [])))
     cols[3].metric("IC Reports", len(st.session_state.get("ic_reports", [])))
+
+    st.subheader("FRED Connection")
+    fred = st.session_state.get("fred_health", {})
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Configured", "yes" if fred.get("configured") else "no")
+    c2.metric("Reachable", "yes" if fred.get("reachable") else "no")
+    c3.metric("Mode", fred.get("mode", "fallback"))
+    c4.metric("Latest Pull", fred.get("latest_successful_pull") or "never")
+    message = fred.get("message", "FRED status unavailable")
+    if message.startswith("Live Data Mode"):
+        st.success(message.replace("Live Data Mode - FRED connected", "Live Data Mode — FRED connected"))
+    else:
+        st.warning(message)
 
     with st.expander("Scheduled Jobs"):
         table(scheduler.get("durable_jobs", []), None, "No scheduled jobs configured yet.")

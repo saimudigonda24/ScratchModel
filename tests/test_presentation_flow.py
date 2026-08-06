@@ -79,6 +79,7 @@ def test_investment_committee_report_retrieval(monkeypatch):
 
 def test_live_and_fallback_data_mode_labels():
     assert data_mode_label({"source_status": {"FRED": "ok: 1 signals"}}) == "Live Data Mode"
+    assert data_mode_label({"source_status": {"FRED": "Live Data Mode - FRED connected"}}) == "Live Data Mode - FRED connected"
     assert data_mode_label({"source_status": {"FRED": "unavailable: 1/1 signals"}}).startswith("Demo Mode")
     assert data_mode_label({}).startswith("Demo Mode")
 

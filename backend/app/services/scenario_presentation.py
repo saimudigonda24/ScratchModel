@@ -519,6 +519,9 @@ def build_presentation_outlook(
 
 def data_mode_label(snapshot: dict[str, Any]) -> str:
     statuses = snapshot.get("source_status", {}) if isinstance(snapshot, dict) else {}
+    fred_status = statuses.get("FRED", "")
+    if "live" in str(fred_status).lower() or "connected" in str(fred_status).lower():
+        return "Live Data Mode - FRED connected"
     if not statuses:
         return "Demo Mode: Some outputs are based on fallback data and should not be treated as live investment research."
     unavailable = [value for value in statuses.values() if "unavailable" in str(value).lower() or "error" in str(value).lower()]

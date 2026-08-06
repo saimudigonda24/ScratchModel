@@ -61,7 +61,7 @@ class HTTPMarketDataConnector(MarketDataConnector):
                     "source": self.source_name,
                     "requested_at": datetime.utcnow().isoformat(),
                     "url": url,
-                    "params": params or {},
+                    "params": self.sanitize_mapping(params or {}),
                     "payload": payload,
                     "cached": False,
                 }
@@ -70,9 +70,28 @@ class HTTPMarketDataConnector(MarketDataConnector):
                 cache_path.write_text(json.dumps(stamped))
                 return stamped
             except Exception as exc:  # pragma: no cover - network dependent
-                last_error = str(exc)
+                last_error = self.safe_error_message(exc)
                 time.sleep(0.25 * (2**attempt))
         return self.unavailable_payload(last_error or "request failed")
+
+    def sanitize_mapping(self, values: dict[str, Any]) -> dict[str, Any]:
+        secret_terms = ("key", "token", "secret", "authorization", "password")
+        sanitized = {}
+        for key, value in values.items():
+            if any(term in str(key).lower() for term in secret_terms):
+                sanitized[key] = "[REDACTED]"
+            else:
+                sanitized[key] = value
+        return sanitized
+
+    def safe_error_message(self, exc: Exception) -> str:
+        if isinstance(exc, httpx.HTTPStatusError):
+            return f"HTTP {exc.response.status_code} from {self.source_name}"
+        if isinstance(exc, httpx.TimeoutException):
+            return f"timeout contacting {self.source_name}"
+        if isinstance(exc, httpx.RequestError):
+            return f"request error contacting {self.source_name}"
+        return exc.__class__.__name__
 
     def save_raw_json(self, payload: dict[str, Any]) -> Path:
         path = RAW_ROOT / self.safe_source() / f"{datetime.utcnow().strftime('%Y%m%dT%H%M%S%fZ')}.json"

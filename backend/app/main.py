@@ -33,6 +33,7 @@ from app.services.eval_ranking import evaluate_outcome_rankings
 from app.services.scheduler import LightweightScheduler
 from app.services.backtesting import HistoricalBacktestService
 from app.services.institutional_memory import dashboard_lessons_summary, generate_lessons_learned
+from app.services.market_data import MarketDataService
 from app.services.proxy_mapping import all_proxy_mappings
 from app.services.regime_labeling import RegimeInput, save_run_regime_label
 from app.services.scenario_lab import (
@@ -77,8 +78,13 @@ app.add_middleware(
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "mode": "v1-functional"}
+def health() -> dict:
+    return {"status": "ok", "mode": "v1-functional", "fred": MarketDataService().fred_status()}
+
+
+@app.get("/health/fred")
+def fred_health() -> dict:
+    return MarketDataService().fred_status()
 
 
 @app.get("/signals", response_model=MacroDataSnapshot)

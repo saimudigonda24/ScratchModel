@@ -91,12 +91,17 @@ class MarketDataService:
                 connector_signals = connector.fetch_signals()
                 signals.extend(connector_signals)
                 unavailable = [signal for signal in connector_signals if signal.value == "unavailable"]
-                source_status[connector.source_name] = (
-                    f"unavailable: {len(unavailable)}/{len(connector_signals)} signals"
-                    if unavailable
-                    else f"ok: {len(connector_signals)} signals"
-                )
+                if connector.source_name == "FRED":
+                    source_status[connector.source_name] = connector.health_status()["message"]
+                else:
+                    source_status[connector.source_name] = (
+                        f"unavailable: {len(unavailable)}/{len(connector_signals)} signals"
+                        if unavailable
+                        else f"ok: {len(connector_signals)} signals"
+                    )
             except Exception as exc:  # pragma: no cover - defensive boundary
                 source_status[connector.source_name] = f"error: {exc}"
         return MacroDataSnapshot(signals=signals, source_status=source_status)
 
+    def fred_status(self) -> dict:
+        return self.fred.health_status()
