@@ -395,6 +395,11 @@ with tabs[0]:
                 st.session_state.scenario_assumptions_confirmed = False
                 st.session_state.scenario_outlook = {}
                 st.success("Scenario parsed. Review and edit the extracted fields below.")
+            elif parsed.get("status") == "not_ready":
+                st.session_state.scenario_assumptions_confirmed = False
+                st.session_state.scenario_outlook = {}
+                st.warning(f"Ollama parser unavailable: {parsed.get('warning')}")
+                st.info("Choose Use Rule-Based Fallback, Enter Manually, or Retry Ollama.")
         cols = st.columns(2)
         if cols[0].button("Reparse Scenario", use_container_width=True):
             parsed = api_post("/scenario-lab/parse", {"text": scenario_text}, {})
@@ -404,6 +409,8 @@ with tabs[0]:
                 st.session_state.scenario_assumptions_confirmed = False
                 st.session_state.scenario_outlook = {}
                 st.rerun()
+            elif parsed.get("status") == "not_ready":
+                st.warning(f"Ollama parser unavailable: {parsed.get('warning')}")
         if cols[1].button("Use Rule-Based Fallback", use_container_width=True):
             parsed = api_post("/scenario-lab/parse", {"text": scenario_text, "force_rule_fallback": True}, {})
             if parsed.get("scenario"):
@@ -412,7 +419,15 @@ with tabs[0]:
                 st.session_state.scenario_assumptions_confirmed = False
                 st.session_state.scenario_outlook = {}
                 st.warning("Rule-based fallback parser used. Review required before analysis.")
-        st.caption("The parser is rule-based for the demo. You can edit every extracted field before analysis.")
+        if st.button("Enter Manually", use_container_width=True):
+            st.session_state.scenario_builder = default_scenario()
+            st.session_state.scenario_builder["parser_provider"] = "manual"
+            st.session_state.scenario_builder["scenario_id"] = None
+            st.session_state.scenario_builder["scenario_hash"] = None
+            st.session_state.scenario_assumptions_confirmed = False
+            st.session_state.scenario_outlook = {}
+            st.info("Manual structured controls loaded. Review fields and click Use Parsed Values before analysis.")
+        st.caption("Ollama is the primary parser. Rule-based parsing is available only as an explicit fallback.")
 
     with input_tabs[1]:
         st.markdown("**Scenario Presets**")

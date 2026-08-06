@@ -36,20 +36,20 @@ class ParsedScenario(BaseModel):
     scenario_hash: str
     scenario_name: str
     scenario_description: str
-    growth_outlook: GrowthOutlook
-    inflation_direction: InflationDirection
-    inflation_surprise: InflationSurprise
-    central_bank_stance: CentralBankStance
+    growth_outlook: GrowthOutlook | None = None
+    inflation_direction: InflationDirection | None = None
+    inflation_surprise: InflationSurprise | None = None
+    central_bank_stance: CentralBankStance | None = None
     expected_policy_path: str | None = None
-    fed_position: FedPosition
-    labor_market: LaborMarket
-    financial_conditions: FinancialConditions
-    market_volatility: MarketVolatility
-    credit_stress: int = Field(ge=0, le=10)
-    dollar_outlook: DollarOutlook
-    commodity_shock: CommodityShock
-    equity_valuation: EquityValuation
-    time_horizon: TimeHorizon
+    fed_position: FedPosition | None = None
+    labor_market: LaborMarket | None = None
+    financial_conditions: FinancialConditions | None = None
+    market_volatility: MarketVolatility | None = None
+    credit_stress: int | None = Field(default=None, ge=0, le=10)
+    dollar_outlook: DollarOutlook | None = None
+    commodity_shock: CommodityShock | None = None
+    equity_valuation: EquityValuation | None = None
+    time_horizon: TimeHorizon | None = None
     countries: list[str] = Field(default_factory=list)
     custom_regions: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
@@ -63,6 +63,7 @@ class ParsedScenario(BaseModel):
     parser_confidence: float = Field(ge=0, le=1)
     field_confidence: dict[str, float] = Field(default_factory=dict)
     field_excerpts: dict[str, str] = Field(default_factory=dict)
+    supporting_text_by_field: dict[str, str] = Field(default_factory=dict)
     contradiction_warnings: list[str] = Field(default_factory=list)
     low_confidence_fields: list[str] = Field(default_factory=list)
     phases: list[ScenarioPhase] = Field(default_factory=list)
@@ -117,6 +118,7 @@ class ParsedScenario(BaseModel):
             "parser_confidence": self.parser_confidence,
             "field_confidence": self.field_confidence,
             "field_excerpts": self.field_excerpts,
+            "supporting_text_by_field": self.supporting_text_by_field or self.field_excerpts,
             "low_confidence_fields": self.low_confidence_fields,
             "parser_warnings": self.contradiction_warnings + ([self.probability_total_warning] if self.probability_total_warning else []),
             "contradiction_warnings": self.contradiction_warnings,

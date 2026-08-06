@@ -322,6 +322,11 @@ PARSER_STATUS = {
 
 def parse_free_text_scenario(text: str, force_rule_fallback: bool = False) -> dict[str, Any]:
     provider = os.getenv("HCP_SCENARIO_PARSER_PROVIDER", "ollama").lower()
+    if force_rule_fallback:
+        PARSER_STATUS["fallback_count"] = int(PARSER_STATUS.get("fallback_count", 0)) + 1
+        PARSER_STATUS["mode"] = "Rule-Based Parser Fallback"
+        parsed = _validated_parsed_scenario(rule_based_parse_free_text_scenario(text), text, "rule_fallback", "rule-based-parser", None)
+        return parsed.to_legacy_scenario()
     if provider == "ollama" and not force_rule_fallback:
         result = OllamaProvider().parse_scenario(text)
         if result.ok and result.payload:
@@ -340,10 +345,7 @@ def parse_free_text_scenario(text: str, force_rule_fallback: bool = False) -> di
                 PARSER_STATUS["latest_parser_error"] = f"schema validation failed: {exc}"
         else:
             PARSER_STATUS["latest_parser_error"] = result.error
-    PARSER_STATUS["fallback_count"] = int(PARSER_STATUS.get("fallback_count", 0)) + 1
-    PARSER_STATUS["mode"] = "Rule-Based Parser Fallback"
-    parsed = _validated_parsed_scenario(rule_based_parse_free_text_scenario(text), text, "rule_fallback", "rule-based-parser", None)
-    return parsed.to_legacy_scenario()
+    raise RuntimeError(PARSER_STATUS.get("latest_parser_error") or "Ollama scenario parser unavailable")
 
 
 def ollama_parser_health() -> dict[str, Any]:
@@ -831,7 +833,8 @@ def _normalize_scenario(scenario: dict[str, Any], demo: bool = False) -> dict[st
     payload["labor_market"] = labor_market
     payload["financial_conditions"] = financial_conditions
     payload["market_volatility"] = _choice(merged, "market_volatility", default="normal")
-    payload["credit_stress"] = max(0, min(10, int(float(merged.get("credit_stress", 3)))))
+    credit_value = merged.get("credit_stress")
+    payload["credit_stress"] = max(0, min(10, int(float(credit_value if credit_value is not None else 3))))
     payload["dollar_outlook"] = _choice(merged, "dollar_outlook", default="stable")
     payload["commodity_shock"] = _choice(merged, "commodity_shock", default="none")
     payload["equity_valuation"] = _choice(merged, "equity_valuation", default="fair")
@@ -1134,18 +1137,22 @@ def _validated_parsed_scenario(payload: dict[str, Any], source_text: str, provid
 
 
 def _clean_llm_payload(payload: dict[str, Any], source_text: str) -> dict[str, Any]:
-    fallback = rule_based_parse_free_text_scenario(source_text)
-    cleaned = {**fallback, **{key: value for key, value in payload.items() if value is not None}}
+    cleaned = {key: value for key, value in payload.items()}
     if "countries_or_regions" in cleaned and "countries" not in cleaned:
         cleaned["countries"] = cleaned["countries_or_regions"]
+    if "supporting_text_by_field" in cleaned and "field_excerpts" not in cleaned:
+        cleaned["field_excerpts"] = cleaned["supporting_text_by_field"]
     cleaned.setdefault("countries", ["U.S."])
     cleaned.setdefault("custom_regions", [])
-    cleaned.setdefault("risks", fallback.get("risks", []))
-    cleaned.setdefault("invalidation_triggers", fallback.get("invalidation_triggers", []))
-    cleaned.setdefault("confirming_indicators", fallback.get("confirming_indicators", []))
-    cleaned.setdefault("stated_probabilities", fallback.get("stated_probabilities", {}))
-    cleaned.setdefault("field_excerpts", fallback.get("field_excerpts", {}))
-    cleaned.setdefault("phases", fallback.get("phases", []))
+    cleaned.setdefault("risks", [])
+    cleaned.setdefault("invalidation_triggers", [])
+    cleaned.setdefault("confirming_indicators", [])
+    cleaned.setdefault("stated_probabilities", {})
+    cleaned.setdefault("field_excerpts", {})
+    cleaned.setdefault("supporting_text_by_field", cleaned.get("field_excerpts", {}))
+    cleaned.setdefault("phases", [])
+    cleaned.setdefault("scenario_name", _title_from_text(source_text))
+    cleaned.setdefault("scenario_description", source_text.strip())
     return cleaned
 
 

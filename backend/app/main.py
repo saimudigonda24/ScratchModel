@@ -353,8 +353,16 @@ def scenario_lab_options() -> dict:
 
 @app.post("/scenario-lab/parse")
 def scenario_lab_parse(payload: dict) -> dict:
-    scenario = parse_free_text_scenario(payload.get("text", ""), force_rule_fallback=bool(payload.get("force_rule_fallback", False)))
-    return {"status": "ok", "scenario": scenario, "summary": scenario_summary(scenario)}
+    try:
+        scenario = parse_free_text_scenario(payload.get("text", ""), force_rule_fallback=bool(payload.get("force_rule_fallback", False)))
+        return {"status": "ok", "scenario": scenario, "summary": scenario_summary(scenario)}
+    except Exception as exc:
+        return {
+            "status": "not_ready",
+            "reason": "ollama_parser_unavailable",
+            "warning": str(exc),
+            "actions": ["Use Rule-Based Fallback", "Enter Structured Scenario Manually", "Retry Ollama"],
+        }
 
 
 @app.get("/scenario-lab/parser-health")

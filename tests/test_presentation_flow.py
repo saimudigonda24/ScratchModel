@@ -35,6 +35,16 @@ SCENARIO_B = (
     "Mild recession: 45%, soft landing: 35%, deep downturn: 20%."
 )
 
+SOFT_LANDING_EASING_SCENARIO = (
+    "Over the next 10 months, the U.S. economy avoids recession, but growth remains uneven. "
+    "Consumer spending holds up, while manufacturing and housing stay weak. Inflation continues to decline gradually, "
+    "allowing the Federal Reserve to begin cutting rates slowly, but not aggressively. The labor market cools without collapsing, "
+    "credit spreads remain contained, and financial conditions ease modestly. The U.S. dollar weakens somewhat as rate differentials narrow, "
+    "while gold and long-duration bonds benefit from lower real yields. Large-cap quality equities continue to outperform, "
+    "but small caps and highly leveraged companies remain vulnerable. Assume a 55% probability of a soft landing, "
+    "a 25% probability of renewed inflation that delays rate cuts, and a 20% probability of a mild recession."
+)
+
 
 class FakeSnapshot:
     def model_dump(self, mode="json"):
@@ -132,7 +142,7 @@ def test_scenario_api_failure_is_graceful(monkeypatch):
 
 
 def test_free_text_scenario_parsing_extracts_assumptions():
-    parsed = parse_free_text_scenario("Inflation surprises higher, growth remains strong, and the Fed delays tightening.")
+    parsed = parse_free_text_scenario("Inflation surprises higher, growth remains strong, and the Fed delays tightening.", force_rule_fallback=True)
 
     assert parsed["growth_outlook"] == "strong acceleration"
     assert parsed["inflation_surprise"] == "large upside surprise"
@@ -260,10 +270,12 @@ def test_ollama_unavailable_falls_back_with_provenance(monkeypatch):
         lambda self, text: OllamaParseResult(False, None, "llama3.1:8b", 50, "connection refused"),
     )
 
-    parsed = parse_free_text_scenario(SCENARIO_A)
-
-    assert parsed["parser_provider"] == "rule_fallback"
-    assert parsed["growth_outlook"] == "slowing growth"
+    try:
+        parse_free_text_scenario(SCENARIO_A)
+    except RuntimeError as exc:
+        assert "connection refused" in str(exc)
+    else:
+        raise AssertionError("Ollama failure should require explicit fallback")
 
 
 def test_regression_scenario_a_core_fields():
@@ -291,6 +303,75 @@ def test_regression_scenario_b_core_fields_and_probabilities():
     assert parsed["dollar_outlook"] == "moderately weaker"
     assert parsed["commodity_shock"] == "none"
     assert parsed["stated_probabilities"] == {"mild_recession": 0.45, "soft_landing": 0.35, "deep_downturn": 0.2}
+
+
+def soft_landing_ollama_payload() -> dict:
+    return {
+        "scenario_name": "Soft Landing / Gradual Fed Easing",
+        "scenario_description": SOFT_LANDING_EASING_SCENARIO,
+        "growth_outlook": "slowing growth",
+        "inflation_direction": "disinflation",
+        "inflation_surprise": "small downside surprise",
+        "central_bank_stance": "gradually easing",
+        "expected_policy_path": "The Federal Reserve begins cutting rates slowly, but not aggressively.",
+        "fed_position": "roughly on time",
+        "labor_market": "cooling",
+        "financial_conditions": "loose",
+        "market_volatility": "normal",
+        "credit_stress": 2,
+        "dollar_outlook": "moderately weaker",
+        "commodity_shock": "none",
+        "equity_valuation": None,
+        "time_horizon": "6-12 months",
+        "countries": ["U.S."],
+        "custom_regions": [],
+        "risks": ["Renewed inflation delays rate cuts.", "Mild recession risk remains."],
+        "confirming_indicators": ["Inflation continues to decline.", "Credit spreads remain contained."],
+        "invalidation_triggers": ["Inflation reaccelerates.", "Credit spreads widen materially."],
+        "stated_probabilities": {"soft_landing": 0.55, "renewed_inflation": 0.25, "mild_recession": 0.2},
+        "phases": [],
+        "parser_confidence": 0.92,
+        "field_confidence": {
+            "growth_outlook": 0.86,
+            "inflation_direction": 0.95,
+            "central_bank_stance": 0.95,
+            "dollar_outlook": 0.9,
+        },
+        "supporting_text_by_field": {
+            "growth_outlook": "growth remains uneven",
+            "inflation_direction": "Inflation continues to decline gradually",
+            "central_bank_stance": "begin cutting rates slowly",
+            "dollar_outlook": "U.S. dollar weakens somewhat",
+        },
+        "contradiction_warnings": [],
+    }
+
+
+def test_soft_landing_gradual_easing_ollama_regression(monkeypatch):
+    monkeypatch.setenv("HCP_SCENARIO_PARSER_PROVIDER", "ollama")
+    monkeypatch.setattr(
+        "app.services.scenario_presentation.OllamaProvider.parse_scenario",
+        lambda self, text: OllamaParseResult(True, soft_landing_ollama_payload(), "llama3.1:8b", 140, None),
+    )
+
+    parsed = parse_free_text_scenario(SOFT_LANDING_EASING_SCENARIO)
+
+    assert parsed["parser_provider"] == "ollama"
+    assert parsed["parser_model"] == "llama3.1:8b"
+    assert parsed["scenario_name"] == "Soft Landing / Gradual Fed Easing"
+    assert parsed["growth_outlook"] == "slowing growth"
+    assert parsed["inflation_direction"] == "disinflation"
+    assert parsed["central_bank_stance"] == "gradually easing"
+    assert parsed["fed_position"] == "roughly on time"
+    assert parsed["labor_market"] == "cooling"
+    assert parsed["financial_conditions"] == "loose"
+    assert parsed["market_volatility"] == "normal"
+    assert parsed["credit_stress"] == 2
+    assert parsed["dollar_outlook"] == "moderately weaker"
+    assert parsed["commodity_shock"] == "none"
+    assert parsed["time_horizon"] == "6-12 months"
+    assert parsed["stated_probabilities"] == {"soft_landing": 0.55, "renewed_inflation": 0.25, "mild_recession": 0.2}
+    assert parsed["supporting_text_by_field"]["inflation_direction"] == "Inflation continues to decline gradually"
 
 
 def test_confirmation_hash_rejects_stale_state():
@@ -394,7 +475,7 @@ def test_recommendations_change_with_recession_volatility_and_fed_stance(monkeyp
 
 def test_manager_scenario_final_output_sections_are_non_empty(monkeypatch):
     monkeypatch.setattr("app.services.scenario_presentation.ingest_all_sources", lambda: FakeSnapshot())
-    parsed = parse_free_text_scenario(MANAGER_SCENARIO)
+    parsed = parse_free_text_scenario(MANAGER_SCENARIO, force_rule_fallback=True)
 
     outlook = generate_presentation_outlook(parsed, sequence_name="Manager Parser Regression Test")
 
@@ -406,3 +487,58 @@ def test_manager_scenario_final_output_sections_are_non_empty(monkeypatch):
     assert outlook["historical_analogs"]
     markdown = outlook_to_markdown(outlook)
     assert "Not enough information to populate this section." not in markdown
+
+
+def test_soft_landing_outlook_does_not_contain_inflation_preset_leakage(monkeypatch):
+    monkeypatch.setattr("app.services.scenario_presentation.ingest_all_sources", lambda: FakeSnapshot())
+    parsed = confirm_structured_scenario(soft_landing_ollama_payload() | {
+        "scenario_id": "scenario_soft_landing_test",
+        "scenario_hash": "temporary",
+        "parser_provider": "ollama",
+        "parser_model": "llama3.1:8b",
+        "source_text": SOFT_LANDING_EASING_SCENARIO,
+    })
+
+    outlook = generate_presentation_outlook(parsed, sequence_name="Soft Landing Regression")
+    rendered = str(outlook).lower()
+
+    assert outlook["scenario_definition"]["name"] == "Soft Landing / Gradual Fed Easing"
+    forbidden = [
+        "sharply higher",
+        "behind the curve",
+        "strong acceleration",
+        "energy shock",
+        "moderately stronger",
+        "sharply stronger",
+        "overheating",
+        "commodity shock basket",
+    ]
+    for phrase in forbidden:
+        assert phrase not in rendered
+
+
+def test_sequential_inflation_to_soft_landing_state_isolation(monkeypatch):
+    monkeypatch.setattr("app.services.scenario_presentation.ingest_all_sources", lambda: FakeSnapshot())
+    inflation = confirm_structured_scenario(parse_free_text_scenario(SCENARIO_A, force_rule_fallback=True))
+    inflation_outlook = safe_generate_presentation_outlook(inflation, sequence_name="Sequential Inflation")
+    assert inflation_outlook["status"] == "ok"
+    assert inflation["commodity_shock"] == "energy shock"
+
+    monkeypatch.setenv("HCP_SCENARIO_PARSER_PROVIDER", "ollama")
+    monkeypatch.setattr(
+        "app.services.scenario_presentation.OllamaProvider.parse_scenario",
+        lambda self, text: OllamaParseResult(True, soft_landing_ollama_payload(), "llama3.1:8b", 140, None),
+    )
+    soft = confirm_structured_scenario(parse_free_text_scenario(SOFT_LANDING_EASING_SCENARIO))
+    soft_outlook = safe_generate_presentation_outlook(soft, sequence_name="Sequential Soft Landing")
+
+    assert soft_outlook["status"] == "ok"
+    assert inflation["scenario_id"] != soft["scenario_id"]
+    assert inflation["scenario_hash"] != soft["scenario_hash"]
+    assert soft["commodity_shock"] == "none"
+    assert soft["fed_position"] == "roughly on time"
+    assert soft["dollar_outlook"] == "moderately weaker"
+    rendered = str(soft_outlook).lower()
+    assert "energy shock" not in rendered
+    assert "behind the curve" not in rendered
+    assert "strong acceleration" not in rendered
