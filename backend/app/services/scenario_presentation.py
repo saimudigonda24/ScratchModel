@@ -545,6 +545,10 @@ def rule_based_parse_free_text_scenario(text: str) -> dict[str, Any]:
 def scenario_summary(scenario: dict[str, Any]) -> dict[str, Any]:
     normalized = _normalize_scenario(scenario)
     return {
+        "parser provider": scenario.get("parser_provider") or normalized.get("parser_provider") or "not specified",
+        "parser model": scenario.get("parser_model") or normalized.get("parser_model") or "not specified",
+        "scenario ID": scenario.get("scenario_id") or normalized.get("scenario_id") or "not assigned",
+        "scenario hash": scenario.get("scenario_hash") or normalized.get("scenario_hash") or "not assigned",
         "growth": normalized["growth_outlook"],
         "inflation": normalized["inflation_direction"],
         "Fed stance": normalized["central_bank_stance"],

@@ -31,6 +31,10 @@ def test_system_monitor_smoke_layout_sections_present():
     assert "Use Rule-Based Fallback" in source
     assert "Reparse Scenario" in source
     assert "Use Parsed Values" in source
+    assert "Parser Provider" in source
+    assert "Parser Model" in source
+    assert "Scenario ID" in source
+    assert "Scenario Hash" in source
     assert "Training & Evaluation Controls" in source
     assert "format_dashboard_timestamp" in source
     assert "✓ Connected" in source

@@ -262,6 +262,19 @@ def merge_builder_updates(builder: dict[str, Any]) -> dict[str, Any]:
     custom_regions = ", ".join(region for region in existing_regions if region not in region_options)
     with st.form("structured_scenario_editor"):
         st.subheader("Structured Scenario Summary")
+        provider = builder.get("parser_provider") or "not specified"
+        model = builder.get("parser_model") or "not specified"
+        scenario_id = builder.get("scenario_id") or "not assigned"
+        scenario_hash = builder.get("scenario_hash") or "not assigned"
+        meta_cols = st.columns(4)
+        meta_cols[0].caption("Parser Provider")
+        meta_cols[0].code(str(provider), language=None)
+        meta_cols[1].caption("Parser Model")
+        meta_cols[1].code(str(model), language=None)
+        meta_cols[2].caption("Scenario ID")
+        meta_cols[2].code(str(scenario_id), language=None)
+        meta_cols[3].caption("Scenario Hash")
+        meta_cols[3].code(str(scenario_hash), language=None)
         c1, c2 = st.columns(2)
         scenario_name = c1.text_input("Scenario name", value=builder.get("scenario_name", "Custom Macro Scenario"))
         scenario_description = c2.text_area("Scenario description", value=builder.get("scenario_description", ""), height=90)
@@ -319,6 +332,20 @@ def merge_builder_updates(builder: dict[str, Any]) -> dict[str, Any]:
         "custom_assumptions": custom_assumptions,
         "risks": [item.strip() for item in risks.splitlines() if item.strip()],
         "invalidation_triggers": [item.strip() for item in invalidation.splitlines() if item.strip()],
+        "parser_provider": builder.get("parser_provider"),
+        "parser_model": builder.get("parser_model"),
+        "scenario_id": builder.get("scenario_id"),
+        "scenario_hash": builder.get("scenario_hash"),
+        "confirmed_scenario_id": builder.get("confirmed_scenario_id"),
+        "confirmed_scenario_hash": builder.get("confirmed_scenario_hash"),
+        "parser_confidence": builder.get("parser_confidence"),
+        "field_confidence": builder.get("field_confidence"),
+        "field_excerpts": builder.get("field_excerpts"),
+        "low_confidence_fields": builder.get("low_confidence_fields", []),
+        "parser_warnings": builder.get("parser_warnings", []),
+        "source_text": builder.get("source_text"),
+        "stated_probabilities": builder.get("stated_probabilities", {}),
+        "phases": builder.get("phases", []),
     }
     return {"scenario": updated, "save_summary": save_summary, "generate": generate}
 

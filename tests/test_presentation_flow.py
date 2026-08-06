@@ -432,9 +432,17 @@ def test_scenario_summary_formatting():
             "credit_stress": 8,
             "dollar_outlook": "sharply stronger",
             "countries_or_regions": ["U.S.", "Eurozone"],
+            "parser_provider": "ollama",
+            "parser_model": "llama3.1:8b",
+            "scenario_id": "scenario_visible_test",
+            "scenario_hash": "abc123hash",
         }
     )
 
+    assert summary["parser provider"] == "ollama"
+    assert summary["parser model"] == "llama3.1:8b"
+    assert summary["scenario ID"] == "scenario_visible_test"
+    assert summary["scenario hash"] == "abc123hash"
     assert summary["growth"] == "slowing growth"
     assert summary["volatility"] == "high"
     assert summary["credit stress"] == 8
