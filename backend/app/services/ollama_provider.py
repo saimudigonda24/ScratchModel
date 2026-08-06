@@ -24,14 +24,15 @@ class OllamaParseResult:
     model: str
     duration_ms: int
     error: str | None = None
+    timings: dict[str, int] | None = None
 
 
 class OllamaProvider:
-    def __init__(self, base_url: str | None = None, model: str | None = None, timeout_seconds: float = 45.0, retries: int = 1):
+    def __init__(self, base_url: str | None = None, model: str | None = None, timeout_seconds: float | None = None, retries: int | None = None):
         self.base_url = (base_url or os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434").rstrip("/")
         self.model = model or os.getenv("OLLAMA_SCENARIO_MODEL") or "llama3.1:8b"
-        self.timeout_seconds = timeout_seconds
-        self.retries = retries
+        self.timeout_seconds = timeout_seconds if timeout_seconds is not None else float(os.getenv("OLLAMA_SCENARIO_TIMEOUT_SECONDS", "6"))
+        self.retries = retries if retries is not None else int(os.getenv("OLLAMA_SCENARIO_RETRIES", "0"))
 
     def health(self) -> dict[str, Any]:
         started = time.perf_counter()
@@ -62,10 +63,13 @@ class OllamaProvider:
 
     def parse_scenario(self, source_text: str) -> OllamaParseResult:
         started = time.perf_counter()
-        prompt = f"{_system_prompt()}\n\nSOURCE TEXT:\n{source_text}\n\nReturn JSON only."
+        request_started = time.perf_counter()
+        prompt = f"{_system_prompt()}\n\nSOURCE TEXT:\n{source_text[:4000]}\n\nReturn JSON only."
+        request_creation_ms = int((time.perf_counter() - request_started) * 1000)
         last_error = None
         for attempt in range(self.retries + 1):
             try:
+                inference_started = time.perf_counter()
                 response = httpx.post(
                     f"{self.base_url}/api/generate",
                     json={
@@ -73,18 +77,32 @@ class OllamaProvider:
                         "prompt": prompt,
                         "stream": False,
                         "format": "json",
-                        "options": {"temperature": 0},
+                        "options": {
+                            "temperature": 0,
+                            "num_ctx": int(os.getenv("OLLAMA_SCENARIO_NUM_CTX", "2048")),
+                            "num_predict": int(os.getenv("OLLAMA_SCENARIO_NUM_PREDICT", "700")),
+                            "num_thread": int(os.getenv("OLLAMA_SCENARIO_NUM_THREAD", "4")),
+                        },
                     },
                     timeout=self.timeout_seconds,
                 )
                 response.raise_for_status()
                 payload = response.json()
                 content = payload.get("response", "{}")
+                inference_ms = int((time.perf_counter() - inference_started) * 1000)
+                json_started = time.perf_counter()
+                parsed = json.loads(content)
+                json_validation_ms = int((time.perf_counter() - json_started) * 1000)
                 return OllamaParseResult(
                     ok=True,
-                    payload=json.loads(content),
+                    payload=parsed,
                     model=self.model,
                     duration_ms=int((time.perf_counter() - started) * 1000),
+                    timings={
+                        "request_creation_ms": request_creation_ms,
+                        "ollama_inference_ms": inference_ms,
+                        "json_decode_ms": json_validation_ms,
+                    },
                 )
             except Exception as exc:
                 last_error = _safe_error(exc)
@@ -96,6 +114,7 @@ class OllamaProvider:
             model=self.model,
             duration_ms=int((time.perf_counter() - started) * 1000),
             error=last_error or "Ollama parse failed",
+            timings={"request_creation_ms": request_creation_ms, "ollama_inference_ms": int((time.perf_counter() - started) * 1000)},
         )
 
 

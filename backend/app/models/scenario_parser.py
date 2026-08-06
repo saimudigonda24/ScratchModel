@@ -68,6 +68,7 @@ class ParsedScenario(BaseModel):
     low_confidence_fields: list[str] = Field(default_factory=list)
     phases: list[ScenarioPhase] = Field(default_factory=list)
     parse_duration_ms: int | None = None
+    parse_timing: dict[str, int] = Field(default_factory=dict)
 
     @field_validator("stated_probabilities")
     @classmethod
@@ -126,4 +127,5 @@ class ParsedScenario(BaseModel):
             "source_text": self.source_text,
             "phases": [phase.model_dump(mode="json") for phase in self.phases],
             "parse_duration_ms": self.parse_duration_ms,
+            "parse_timing": self.parse_timing,
         }

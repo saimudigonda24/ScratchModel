@@ -331,13 +331,26 @@ def parse_free_text_scenario(text: str, force_rule_fallback: bool = False) -> di
     if force_rule_fallback:
         PARSER_STATUS["fallback_count"] = int(PARSER_STATUS.get("fallback_count", 0)) + 1
         PARSER_STATUS["mode"] = "Rule-Based Parser Fallback"
-        parsed = _validated_parsed_scenario(rule_based_parse_free_text_scenario(text), text, "rule_fallback", "rule-based-parser", None)
+        started = datetime.utcnow()
+        payload = rule_based_parse_free_text_scenario(text)
+        rule_ms = int((datetime.utcnow() - started).total_seconds() * 1000)
+        parsed = _validated_parsed_scenario(
+            {**payload, "parse_timing": {"request_creation_ms": 0, "ollama_inference_ms": 0, "json_validation_ms": rule_ms, "ui_update_ms": 0}},
+            text,
+            "rule_fallback",
+            "rule-based-parser",
+            rule_ms,
+        )
         return parsed.to_legacy_scenario()
     if provider == "ollama" and not force_rule_fallback:
         result = OllamaProvider().parse_scenario(text)
         if result.ok and result.payload:
             try:
-                parsed = _validated_parsed_scenario(result.payload, text, "ollama", result.model, result.duration_ms)
+                validation_started = datetime.utcnow()
+                payload = {**result.payload, "parse_timing": result.timings or {}}
+                parsed = _validated_parsed_scenario(payload, text, "ollama", result.model, result.duration_ms)
+                parsed.parse_timing["json_validation_ms"] = int((datetime.utcnow() - validation_started).total_seconds() * 1000)
+                parsed.parse_timing["total_parse_ms"] = result.duration_ms
                 PARSER_STATUS.update(
                     {
                         "mode": "Local Scenario Parser — Connected",
@@ -549,6 +562,9 @@ def scenario_summary(scenario: dict[str, Any]) -> dict[str, Any]:
         "parser model": scenario.get("parser_model") or normalized.get("parser_model") or "not specified",
         "scenario ID": scenario.get("scenario_id") or normalized.get("scenario_id") or "not assigned",
         "scenario hash": scenario.get("scenario_hash") or normalized.get("scenario_hash") or "not assigned",
+        "parse status": "loaded into controls" if scenario.get("scenario_id") else "not parsed",
+        "parse duration": _format_duration_ms(scenario.get("parse_duration_ms")),
+        "widget values refreshed": "yes" if scenario.get("widgets_refreshed") else "not yet",
         "growth": normalized["growth_outlook"],
         "inflation": normalized["inflation_direction"],
         "Fed stance": normalized["central_bank_stance"],
@@ -561,6 +577,18 @@ def scenario_summary(scenario: dict[str, Any]) -> dict[str, Any]:
         "scenario probability": "not specified" if normalized.get("probability") is None else f"{normalized['probability']:.0%}",
         "countries": ", ".join(normalized.get("countries_or_regions", [])),
     }
+
+
+def _format_duration_ms(value: Any) -> str:
+    if value in {None, ""}:
+        return "not available"
+    try:
+        duration = int(float(value))
+    except (TypeError, ValueError):
+        return "not available"
+    if duration < 1000:
+        return f"{duration} ms"
+    return f"{duration / 1000:.1f} sec"
 
 
 def generate_presentation_outlook(
@@ -1724,6 +1752,7 @@ def _validated_parsed_scenario(payload: dict[str, Any], source_text: str, provid
     cleaned["parser_provider"] = provider
     cleaned["parser_model"] = model
     cleaned["parse_duration_ms"] = duration_ms
+    cleaned["parse_timing"] = cleaned.get("parse_timing", {})
     if not cleaned.get("field_confidence") and isinstance(cleaned.get("parser_confidence"), dict):
         cleaned["field_confidence"] = cleaned["parser_confidence"]
     else:

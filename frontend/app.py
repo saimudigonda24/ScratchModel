@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -27,9 +28,9 @@ def api_get(path: str, default: Any = None) -> Any:
         return default
 
 
-def api_post(path: str, payload: dict | None = None, default: Any = None) -> Any:
+def api_post(path: str, payload: dict | None = None, default: Any = None, timeout: float = 90) -> Any:
     try:
-        response = requests.post(f"{API_URL}{path}", json=payload, timeout=90)
+        response = requests.post(f"{API_URL}{path}", json=payload, timeout=timeout)
         response.raise_for_status()
         return response.json()
     except requests.RequestException as exc:
@@ -224,38 +225,84 @@ def latest_report() -> dict[str, Any] | None:
 
 
 def default_scenario() -> dict[str, Any]:
-    presets = (st.session_state.get("scenario_options") or {}).get("presets", {})
-    return dict(presets.get("Inflation Surprise + Strong Growth", {
-        "scenario_name": "Inflation Surprise + Strong Growth",
-        "scenario_description": "Inflation surprises higher, growth remains strong, and the Fed delays tightening.",
-        "growth_outlook": "strong acceleration",
-        "inflation_direction": "sharply higher",
-        "inflation_surprise": "large upside surprise",
-        "recession_probability": 0.2,
+    return {
+        "scenario_name": "Neutral Scenario",
+        "scenario_description": "",
+        "growth_outlook": "moderate growth",
+        "inflation_direction": "stable",
+        "inflation_surprise": "in line",
+        "recession_probability": 0.3,
         "market_volatility": "normal",
-        "central_bank_stance": "gradually tightening",
-        "fed_position": "behind the curve",
-        "labor_market": "overheating",
-        "financial_conditions": "loose",
-        "credit_stress": 2,
-        "dollar_outlook": "moderately stronger",
-        "commodity_shock": "energy shock",
-        "equity_valuation": "expensive",
+        "central_bank_stance": "neutral",
+        "fed_position": "roughly on time",
+        "labor_market": "cooling",
+        "financial_conditions": "neutral",
+        "credit_stress": 3,
+        "dollar_outlook": "stable",
+        "commodity_shock": "none",
+        "equity_valuation": "fair",
         "time_horizon": "7-14 months",
-        "probability": 0.55,
-        "countries_or_regions": ["U.S.", "Eurozone"],
+        "probability": None,
+        "countries_or_regions": ["U.S."],
         "custom_assumptions": "",
         "risks": [],
         "invalidation_triggers": [],
-    }))
+        "parser_provider": "manual",
+        "parser_model": None,
+        "scenario_id": None,
+        "scenario_hash": None,
+    }
+
+
+def _bump_scenario_widget_version() -> None:
+    st.session_state.scenario_widget_version = int(st.session_state.get("scenario_widget_version", 0)) + 1
+
+
+def set_current_scenario(scenario: dict[str, Any], *, status: str, widgets_refreshed: bool = True) -> None:
+    current = dict(scenario)
+    current["widgets_refreshed"] = widgets_refreshed
+    st.session_state.current_scenario = current
+    st.session_state.scenario_builder = current
+    st.session_state.scenario_parse_status = status
+    st.session_state.scenario_assumptions_confirmed = False
+    st.session_state.scenario_parse_pending = True
+    st.session_state.scenario_outlook = {}
+    st.session_state.active_preset = None
+    _bump_scenario_widget_version()
+
+
+def reset_scenario_state(clear_text: bool = True) -> None:
+    if clear_text:
+        st.session_state.plain_english_scenario_text = ""
+    st.session_state.active_preset = None
+    st.session_state.scenario_parse_status = "Reset to neutral defaults."
+    st.session_state.scenario_parse_timing = {}
+    st.session_state.scenario_assumptions_confirmed = False
+    st.session_state.scenario_parse_pending = False
+    st.session_state.scenario_outlook = {}
+    set_current_scenario(default_scenario(), status="Reset scenario loaded.", widgets_refreshed=True)
+    st.session_state.scenario_parse_pending = False
 
 
 def option_index(options: list[str], value: Any) -> int:
     return options.index(value) if value in options else 0
 
 
+def _duration_label(value: Any) -> str:
+    if value in {None, ""}:
+        return "not available"
+    try:
+        duration = int(float(value))
+    except (TypeError, ValueError):
+        return "not available"
+    if duration < 1000:
+        return f"{duration} ms"
+    return f"{duration / 1000:.1f} sec"
+
+
 def merge_builder_updates(builder: dict[str, Any]) -> dict[str, Any]:
     options = st.session_state.get("scenario_options") or {}
+    key_suffix = st.session_state.get("scenario_widget_version", 0)
     region_options = options.get("countries_or_regions", [])
     existing_regions = builder.get("countries_or_regions", ["U.S."])
     selected_regions = [region for region in existing_regions if region in region_options]
@@ -275,37 +322,56 @@ def merge_builder_updates(builder: dict[str, Any]) -> dict[str, Any]:
         meta_cols[2].code(str(scenario_id), language=None)
         meta_cols[3].caption("Scenario Hash")
         meta_cols[3].code(str(scenario_hash), language=None)
+        status_cols = st.columns(3)
+        status_cols[0].caption("Parse Status")
+        status_cols[0].write(st.session_state.get("scenario_parse_status", "Not parsed yet."))
+        status_cols[1].caption("Parse Duration")
+        status_cols[1].write(_duration_label(builder.get("parse_duration_ms")))
+        status_cols[2].caption("Widget Values Refreshed")
+        status_cols[2].write("Yes" if builder.get("widgets_refreshed") else "Not yet")
+        timings = builder.get("parse_timing") or st.session_state.get("scenario_parse_timing") or {}
+        if timings:
+            st.caption(
+                "Parser timing: "
+                + " | ".join(f"{key.replace('_', ' ')}: {_duration_label(value)}" for key, value in timings.items())
+            )
+        st.markdown("**Section A - Macro Conditions**")
         c1, c2 = st.columns(2)
-        scenario_name = c1.text_input("Scenario name", value=builder.get("scenario_name", "Custom Macro Scenario"))
-        scenario_description = c2.text_area("Scenario description", value=builder.get("scenario_description", ""), height=90)
+        scenario_name = c1.text_input("Scenario name", value=builder.get("scenario_name", "Custom Macro Scenario"), key=f"scenario_name_{key_suffix}")
+        scenario_description = c2.text_area("Scenario description", value=builder.get("scenario_description", ""), height=90, key=f"scenario_description_{key_suffix}")
         c1, c2, c3 = st.columns(3)
-        growth = c1.selectbox("Growth", options.get("growth_outlook", []), index=option_index(options.get("growth_outlook", []), builder.get("growth_outlook")))
-        inflation = c2.selectbox("Inflation", options.get("inflation_direction", []), index=option_index(options.get("inflation_direction", []), builder.get("inflation_direction")))
-        inflation_surprise = c3.selectbox("Inflation surprise", options.get("inflation_surprise", []), index=option_index(options.get("inflation_surprise", []), builder.get("inflation_surprise")))
+        growth = c1.selectbox("Growth", options.get("growth_outlook", []), index=option_index(options.get("growth_outlook", []), builder.get("growth_outlook")), key=f"growth_{key_suffix}")
+        inflation = c2.selectbox("Inflation", options.get("inflation_direction", []), index=option_index(options.get("inflation_direction", []), builder.get("inflation_direction")), key=f"inflation_{key_suffix}")
+        inflation_surprise = c3.selectbox("Inflation surprise", options.get("inflation_surprise", []), index=option_index(options.get("inflation_surprise", []), builder.get("inflation_surprise")), key=f"inflation_surprise_{key_suffix}")
         c1, c2, c3 = st.columns(3)
-        fed_stance = c1.selectbox("Fed / central bank stance", options.get("central_bank_stance", []), index=option_index(options.get("central_bank_stance", []), builder.get("central_bank_stance")))
-        fed_position = c2.selectbox("Fed position", options.get("fed_position", []), index=option_index(options.get("fed_position", []), builder.get("fed_position")))
-        labor = c3.selectbox("Labor market", options.get("labor_market", []), index=option_index(options.get("labor_market", []), builder.get("labor_market")))
+        fed_stance = c1.selectbox("Fed / central bank stance", options.get("central_bank_stance", []), index=option_index(options.get("central_bank_stance", []), builder.get("central_bank_stance")), key=f"fed_stance_{key_suffix}")
+        fed_position = c2.selectbox("Fed position", options.get("fed_position", []), index=option_index(options.get("fed_position", []), builder.get("fed_position")), key=f"fed_position_{key_suffix}")
+        labor = c3.selectbox("Labor market", options.get("labor_market", []), index=option_index(options.get("labor_market", []), builder.get("labor_market")), key=f"labor_{key_suffix}")
         c1, c2, c3 = st.columns(3)
-        financial = c1.selectbox("Financial conditions", options.get("financial_conditions", []), index=option_index(options.get("financial_conditions", []), builder.get("financial_conditions")))
-        volatility = c2.selectbox("Market volatility", options.get("market_volatility", []), index=option_index(options.get("market_volatility", []), builder.get("market_volatility")))
-        credit_stress = c3.slider("Credit stress", 0, 10, int(builder.get("credit_stress", 3)))
+        financial = c1.selectbox("Financial conditions", options.get("financial_conditions", []), index=option_index(options.get("financial_conditions", []), builder.get("financial_conditions")), key=f"financial_{key_suffix}")
+        volatility = c2.selectbox("Market volatility", options.get("market_volatility", []), index=option_index(options.get("market_volatility", []), builder.get("market_volatility")), key=f"volatility_{key_suffix}")
+        dollar = c3.selectbox("Dollar outlook", options.get("dollar_outlook", []), index=option_index(options.get("dollar_outlook", []), builder.get("dollar_outlook")), key=f"dollar_{key_suffix}")
         c1, c2, c3 = st.columns(3)
-        dollar = c1.selectbox("Dollar outlook", options.get("dollar_outlook", []), index=option_index(options.get("dollar_outlook", []), builder.get("dollar_outlook")))
-        commodity = c2.selectbox("Commodity shock", options.get("commodity_shock", []), index=option_index(options.get("commodity_shock", []), builder.get("commodity_shock")))
-        valuation = c3.selectbox("Equity valuation", options.get("equity_valuation", []), index=option_index(options.get("equity_valuation", []), builder.get("equity_valuation")))
+        commodity = c1.selectbox("Commodity shock", options.get("commodity_shock", []), index=option_index(options.get("commodity_shock", []), builder.get("commodity_shock")), key=f"commodity_{key_suffix}")
+        valuation = c2.selectbox("Equity valuation", options.get("equity_valuation", []), index=option_index(options.get("equity_valuation", []), builder.get("equity_valuation")), key=f"valuation_{key_suffix}")
+        horizon = c3.selectbox("Time horizon", options.get("time_horizon", []), index=option_index(options.get("time_horizon", []), builder.get("time_horizon")), key=f"horizon_{key_suffix}")
+        st.markdown("**Section B - Risk and Probability**")
         c1, c2, c3 = st.columns(3)
-        horizon = c1.selectbox("Time horizon", options.get("time_horizon", []), index=option_index(options.get("time_horizon", []), builder.get("time_horizon")))
-        recession = c2.slider("Recession probability", 0.0, 1.0, float(builder.get("recession_probability", 0.3)), 0.01)
+        credit_stress = c1.slider("Credit stress", 0, 10, int(builder.get("credit_stress", 3)), key=f"credit_stress_{key_suffix}")
+        c1.caption(f"{credit_stress} / 10")
+        recession_pct = c2.slider("Recession probability", 0, 100, int(round(float(builder.get("recession_probability", 0.3)) * 100)), 1, key=f"recession_{key_suffix}")
+        c2.caption(f"{recession_pct}%")
         probability_value = builder.get("probability")
-        probability = c3.slider("Scenario probability", 0.0, 1.0, float(probability_value) if probability_value is not None else 0.5, 0.01)
-        probability_specified = c3.checkbox("Scenario probability specified", value=probability_value is not None)
+        probability_pct = c3.slider("Scenario probability", 0, 100, int(round(float(probability_value) * 100)) if probability_value is not None else 50, 1, key=f"probability_{key_suffix}")
+        c3.caption(f"{probability_pct}%")
+        probability_specified = c3.checkbox("Scenario probability specified", value=probability_value is not None, key=f"probability_specified_{key_suffix}")
+        st.markdown("**Section C - Regions and Narrative**")
         c1, c2 = st.columns(2)
-        countries = c1.multiselect("Countries/regions", region_options, default=selected_regions)
-        custom_countries = c2.text_input("Custom regions", value=custom_regions)
-        custom_assumptions = st.text_area("Custom assumptions", value=builder.get("custom_assumptions", ""), height=90)
-        risks = st.text_area("Risks", value="\n".join(builder.get("risks", [])), height=90)
-        invalidation = st.text_area("Invalidation triggers", value="\n".join(builder.get("invalidation_triggers", [])), height=90)
+        countries = c1.multiselect("Countries/regions", region_options, default=selected_regions, key=f"countries_{key_suffix}")
+        custom_countries = c2.text_input("Custom regions", value=custom_regions, key=f"custom_countries_{key_suffix}")
+        custom_assumptions = st.text_area("Custom assumptions", value=builder.get("custom_assumptions", ""), height=90, key=f"custom_assumptions_{key_suffix}")
+        risks = st.text_area("Risks", value="\n".join(builder.get("risks", [])), height=90, key=f"risks_{key_suffix}")
+        invalidation = st.text_area("Invalidation triggers", value="\n".join(builder.get("invalidation_triggers", [])), height=90, key=f"invalidation_{key_suffix}")
         c1, c2 = st.columns([1, 1])
         save_summary = c1.form_submit_button("Update Scenario Summary", use_container_width=True)
         generate = c2.form_submit_button("Generate HCP Outlook", type="primary", use_container_width=True)
@@ -326,8 +392,8 @@ def merge_builder_updates(builder: dict[str, Any]) -> dict[str, Any]:
         "commodity_shock": commodity,
         "equity_valuation": valuation,
         "time_horizon": horizon,
-        "recession_probability": recession,
-        "probability": probability if probability_specified else None,
+        "recession_probability": recession_pct / 100,
+        "probability": probability_pct / 100 if probability_specified else None,
         "countries_or_regions": regions,
         "custom_assumptions": custom_assumptions,
         "risks": [item.strip() for item in risks.splitlines() if item.strip()],
@@ -346,6 +412,9 @@ def merge_builder_updates(builder: dict[str, Any]) -> dict[str, Any]:
         "source_text": builder.get("source_text"),
         "stated_probabilities": builder.get("stated_probabilities", {}),
         "phases": builder.get("phases", []),
+        "parse_duration_ms": builder.get("parse_duration_ms"),
+        "parse_timing": builder.get("parse_timing", {}),
+        "widgets_refreshed": builder.get("widgets_refreshed", False),
     }
     return {"scenario": updated, "save_summary": save_summary, "generate": generate}
 
@@ -404,56 +473,85 @@ tabs = st.tabs(
 with tabs[0]:
     st.header("Scenario Lab")
     st.write("Describe a macro scenario in plain English or build one with controls, then review the structured assumptions before generating an HCP outlook.")
-    st.session_state.setdefault("scenario_builder", default_scenario())
+    st.session_state.setdefault("scenario_widget_version", 0)
+    st.session_state.setdefault("plain_english_scenario_text", "Inflation surprises higher, growth remains strong, and the Fed delays tightening.")
+    st.session_state.setdefault("current_scenario", default_scenario())
+    st.session_state.setdefault("scenario_builder", st.session_state.current_scenario)
+    st.session_state.scenario_builder = st.session_state.current_scenario
     options = st.session_state.get("scenario_options") or {"presets": {}}
 
     input_tabs = st.tabs(["Describe a Scenario", "Build a Scenario"])
     with input_tabs[0]:
+        if st.button("Reset Scenario", use_container_width=True):
+            reset_scenario_state()
+            st.rerun()
         scenario_text = st.text_area(
             "Plain-English scenario",
-            value="Inflation surprises higher, growth remains strong, and the Fed delays tightening.",
             height=160,
+            key="plain_english_scenario_text",
         )
-        if st.button("Parse Scenario", use_container_width=True):
-            parsed = api_post("/scenario-lab/parse", {"text": scenario_text}, {})
-            if parsed.get("scenario"):
-                st.session_state.scenario_builder = parsed["scenario"]
-                st.session_state.scenario_parse_pending = True
-                st.session_state.scenario_assumptions_confirmed = False
-                st.session_state.scenario_outlook = {}
-                st.success("Scenario parsed. Review and edit the extracted fields below.")
-            elif parsed.get("status") == "not_ready":
-                st.session_state.scenario_assumptions_confirmed = False
-                st.session_state.scenario_outlook = {}
-                st.warning(f"Ollama parser unavailable: {parsed.get('warning')}")
-                st.info("Choose Use Rule-Based Fallback, Enter Manually, or Retry Ollama.")
-        cols = st.columns(2)
-        if cols[0].button("Reparse Scenario", use_container_width=True):
-            parsed = api_post("/scenario-lab/parse", {"text": scenario_text}, {})
-            if parsed.get("scenario"):
-                st.session_state.scenario_builder = parsed["scenario"]
-                st.session_state.scenario_parse_pending = True
-                st.session_state.scenario_assumptions_confirmed = False
-                st.session_state.scenario_outlook = {}
-                st.rerun()
-            elif parsed.get("status") == "not_ready":
-                st.warning(f"Ollama parser unavailable: {parsed.get('warning')}")
-        if cols[1].button("Use Rule-Based Fallback", use_container_width=True):
-            parsed = api_post("/scenario-lab/parse", {"text": scenario_text, "force_rule_fallback": True}, {})
-            if parsed.get("scenario"):
-                st.session_state.scenario_builder = parsed["scenario"]
-                st.session_state.scenario_parse_pending = True
-                st.session_state.scenario_assumptions_confirmed = False
-                st.session_state.scenario_outlook = {}
-                st.warning("Rule-based fallback parser used. Review required before analysis.")
-        if st.button("Enter Manually", use_container_width=True):
-            st.session_state.scenario_builder = default_scenario()
-            st.session_state.scenario_builder["parser_provider"] = "manual"
-            st.session_state.scenario_builder["scenario_id"] = None
-            st.session_state.scenario_builder["scenario_hash"] = None
+
+        def _run_parse(force_rule_fallback: bool = False) -> None:
+            st.session_state.active_preset = None
             st.session_state.scenario_assumptions_confirmed = False
             st.session_state.scenario_outlook = {}
+            st.session_state.scenario_parse_status = "Parsing scenario..."
+            started = time.perf_counter()
+            parsed = api_post(
+                "/scenario-lab/parse",
+                {"text": scenario_text, "force_rule_fallback": force_rule_fallback},
+                {},
+                timeout=15,
+            )
+            ui_update_started = time.perf_counter()
+            if parsed.get("scenario"):
+                scenario = parsed["scenario"]
+                timing = dict(scenario.get("parse_timing") or {})
+                timing["ui_update_ms"] = int((time.perf_counter() - ui_update_started) * 1000)
+                timing["streamlit_roundtrip_ms"] = int((time.perf_counter() - started) * 1000)
+                scenario["parse_timing"] = timing
+                scenario["widgets_refreshed"] = True
+                st.session_state.scenario_parse_timing = timing
+                set_current_scenario(scenario, status="Parsed scenario loaded into controls.", widgets_refreshed=True)
+                st.success("Parsed scenario loaded into controls.")
+            elif parsed.get("status") == "not_ready":
+                reset_scenario_state(clear_text=False)
+                st.session_state.scenario_parse_status = "Parse failed; neutral controls loaded."
+                st.warning(f"Ollama parser unavailable: {parsed.get('warning')}")
+                st.info("Choose Use Rule-Based Fallback, Enter Manually, or Retry Ollama.")
+            else:
+                reset_scenario_state(clear_text=False)
+                st.error("Parser response could not be applied; neutral controls loaded.")
+
+        if st.button("Parse Scenario", use_container_width=True):
+            with st.status("Parsing scenario", expanded=True) as status:
+                st.write("Creating parser request")
+                st.write("Running local Ollama inference")
+                st.write("Validating JSON")
+                st.write("Refreshing structured controls")
+                _run_parse(False)
+                status.update(label=st.session_state.get("scenario_parse_status", "Parse finished"), state="complete")
+            st.rerun()
+        cols = st.columns(2)
+        if cols[0].button("Reparse Scenario", use_container_width=True):
+            with st.status("Reparsing scenario", expanded=True) as status:
+                st.write("Creating parser request")
+                st.write("Running local Ollama inference")
+                st.write("Validating JSON")
+                st.write("Refreshing structured controls")
+                _run_parse(False)
+                status.update(label=st.session_state.get("scenario_parse_status", "Parse finished"), state="complete")
+            st.rerun()
+        if cols[1].button("Use Rule-Based Fallback", use_container_width=True):
+            _run_parse(True)
+            st.warning("Rule-based fallback parser used. Review required before analysis.")
+            st.rerun()
+        if st.button("Enter Manually", use_container_width=True):
+            scenario = default_scenario()
+            scenario["parser_provider"] = "manual"
+            set_current_scenario(scenario, status="Manual structured controls loaded.", widgets_refreshed=True)
             st.info("Manual structured controls loaded. Review fields and click Use Parsed Values before analysis.")
+            st.rerun()
         st.caption("Ollama is the primary parser. Rule-based parsing is available only as an explicit fallback.")
 
     with input_tabs[1]:
@@ -463,14 +561,22 @@ with tabs[0]:
             cols = st.columns(5)
             for col, name in zip(cols, preset_names[row_start:row_start + 5]):
                 if col.button(name, key=f"preset_{name}", use_container_width=True):
-                    st.session_state.scenario_builder = dict(options["presets"][name])
+                    preset = dict(options["presets"][name])
+                    preset["parser_provider"] = "preset"
+                    preset["parser_model"] = None
+                    preset["scenario_id"] = None
+                    preset["scenario_hash"] = None
+                    set_current_scenario(preset, status=f"Loaded preset: {name}", widgets_refreshed=True)
                     st.session_state.scenario_parse_pending = False
-                    st.session_state.scenario_assumptions_confirmed = True
+                    st.session_state.scenario_assumptions_confirmed = False
+                    st.session_state.active_preset = name
                     st.success(f"Loaded preset: {name}")
+                    st.rerun()
         st.caption("Presets populate the controls, but all fields remain editable.")
 
     editor = merge_builder_updates(st.session_state.scenario_builder)
-    st.session_state.scenario_builder = editor["scenario"]
+    st.session_state.current_scenario = editor["scenario"]
+    st.session_state.scenario_builder = st.session_state.current_scenario
     summary = api_post("/scenario-lab/summary", {"scenario": st.session_state.scenario_builder}, {"summary": {}})
     st.markdown("**Pre-Analysis Summary**")
     if st.session_state.scenario_builder.get("scenario_id"):
@@ -499,7 +605,8 @@ with tabs[0]:
     if confirm_cols[0].button("Use Parsed Values", use_container_width=True):
         confirmed = api_post("/scenario-lab/confirm", {"scenario": st.session_state.scenario_builder}, {})
         if confirmed.get("scenario"):
-            st.session_state.scenario_builder = confirmed["scenario"]
+            st.session_state.current_scenario = confirmed["scenario"]
+            st.session_state.scenario_builder = st.session_state.current_scenario
             st.session_state.scenario_assumptions_confirmed = True
             st.session_state.scenario_parse_pending = False
             st.success(f"Parsed assumptions confirmed for analysis. Scenario ID: {st.session_state.scenario_builder.get('scenario_id')}")
@@ -514,7 +621,7 @@ with tabs[0]:
             labels = [f"{format_dashboard_timestamp(row.get('created_at'))} | {row.get('scenario', {}).get('scenario_name')}" for row in phases]
             selected = st.selectbox("Saved scenario", labels)
             if st.button("Copy Selected Scenario Into Editor"):
-                st.session_state.scenario_builder = dict(phases[labels.index(selected)].get("scenario", {}))
+                set_current_scenario(dict(phases[labels.index(selected)].get("scenario", {})), status="Copied previous scenario into controls.", widgets_refreshed=True)
                 st.rerun()
 
     if editor["save_summary"]:

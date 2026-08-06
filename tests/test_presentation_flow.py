@@ -45,6 +45,12 @@ SOFT_LANDING_EASING_SCENARIO = (
     "a 25% probability of renewed inflation that delays rate cuts, and a 20% probability of a mild recession."
 )
 
+SLOWING_DISINFLATION_SCENARIO = (
+    "Over the next 12 months, U.S. economic growth slows but remains positive. "
+    "Consumer spending weakens modestly, hiring cools, unemployment rises gradually, inflation declines overall, "
+    "the Fed cuts rates cautiously, Treasury yields fall, and the U.S. dollar weakens."
+)
+
 FISCAL_SUPPLY_SHOCK_SCENARIO = {
     "scenario_name": "Fiscal Stimulus Meets Supply Shock",
     "scenario_description": "Fiscal stimulus meets tariffs and supply constraints in a higher-inflation environment.",
@@ -379,6 +385,38 @@ def soft_landing_ollama_payload() -> dict:
     }
 
 
+def slowing_disinflation_ollama_payload() -> dict:
+    return {
+        "scenario_name": "Slowing Growth / Cautious Fed Easing",
+        "scenario_description": SLOWING_DISINFLATION_SCENARIO,
+        "growth_outlook": "slowing growth",
+        "inflation_direction": "disinflation",
+        "inflation_surprise": "small downside surprise",
+        "central_bank_stance": "gradually easing",
+        "expected_policy_path": "The Fed cuts rates cautiously as growth slows and inflation declines.",
+        "fed_position": "roughly on time",
+        "labor_market": "cooling",
+        "financial_conditions": "neutral",
+        "market_volatility": "normal",
+        "credit_stress": 3,
+        "dollar_outlook": "moderately weaker",
+        "commodity_shock": "none",
+        "equity_valuation": None,
+        "time_horizon": "6-12 months",
+        "countries": ["U.S."],
+        "custom_regions": [],
+        "risks": ["Growth slows faster than expected."],
+        "confirming_indicators": ["Inflation declines overall.", "Treasury yields fall."],
+        "invalidation_triggers": ["Inflation reaccelerates.", "The dollar strengthens materially."],
+        "stated_probabilities": {},
+        "phases": [],
+        "parser_confidence": 0.9,
+        "field_confidence": {"growth_outlook": 0.9, "inflation_direction": 0.92, "central_bank_stance": 0.88},
+        "field_excerpts": {"growth_outlook": "growth slows but remains positive", "inflation_direction": "inflation declines overall"},
+        "contradiction_warnings": [],
+    }
+
+
 def test_soft_landing_gradual_easing_ollama_regression(monkeypatch):
     monkeypatch.setenv("HCP_SCENARIO_PARSER_PROVIDER", "ollama")
     monkeypatch.setattr(
@@ -404,6 +442,41 @@ def test_soft_landing_gradual_easing_ollama_regression(monkeypatch):
     assert parsed["time_horizon"] == "6-12 months"
     assert parsed["stated_probabilities"] == {"soft_landing": 0.55, "renewed_inflation": 0.25, "mild_recession": 0.2}
     assert parsed["supporting_text_by_field"]["inflation_direction"] == "Inflation continues to decline gradually"
+
+
+def test_slowing_disinflation_parse_is_fast_single_request_and_no_stale_leakage(monkeypatch):
+    calls = {"count": 0}
+
+    def fake_parse(self, text):
+        calls["count"] += 1
+        return OllamaParseResult(
+            True,
+            slowing_disinflation_ollama_payload(),
+            "llama3.1:8b",
+            420,
+            None,
+            {"request_creation_ms": 2, "ollama_inference_ms": 390, "json_decode_ms": 3},
+        )
+
+    monkeypatch.setenv("HCP_SCENARIO_PARSER_PROVIDER", "ollama")
+    monkeypatch.setattr("app.services.scenario_presentation.OllamaProvider.parse_scenario", fake_parse)
+
+    parsed = parse_free_text_scenario(SLOWING_DISINFLATION_SCENARIO)
+
+    assert calls["count"] == 1
+    assert parsed["parse_duration_ms"] == 420
+    assert parsed["parse_timing"]["ollama_inference_ms"] == 390
+    assert parsed["growth_outlook"] == "slowing growth"
+    assert parsed["inflation_direction"] == "disinflation"
+    assert parsed["central_bank_stance"] == "gradually easing"
+    assert parsed["labor_market"] == "cooling"
+    assert parsed["dollar_outlook"] == "moderately weaker"
+    assert parsed["commodity_shock"] == "none"
+    assert parsed["fed_position"] == "roughly on time"
+    rendered = str(parsed).lower()
+    assert "behind the curve" not in rendered
+    assert "energy shock" not in rendered
+    assert "strong acceleration" not in rendered
 
 
 def test_confirmation_hash_rejects_stale_state():

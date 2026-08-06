@@ -35,6 +35,16 @@ def test_system_monitor_smoke_layout_sections_present():
     assert "Parser Model" in source
     assert "Scenario ID" in source
     assert "Scenario Hash" in source
+    assert "Section A - Macro Conditions" in source
+    assert "Section B - Risk and Probability" in source
+    assert "Section C - Regions and Narrative" in source
+    assert "Reset Scenario" in source
+    assert "Parsed scenario loaded into controls." in source
+    assert "Widget Values Refreshed" in source
+    assert "Parse Duration" in source
+    assert "Credit stress" in source and "/ 10" in source
+    assert "recession_pct / 100" in source
+    assert "probability_pct / 100" in source
     assert "Training & Evaluation Controls" in source
     assert "format_dashboard_timestamp" in source
     assert "✓ Connected" in source
