@@ -1,7 +1,6 @@
 import hashlib
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from statistics import mean
 from typing import Any
 
 from app.connectors import ingest_all_sources
@@ -216,30 +215,24 @@ def cross_asset_historical_performance(analogs: list[dict[str, Any]]) -> dict:
     for analog in analogs:
         period = analog["period"]
         for asset in ASSET_CLASSES:
-            horizon_returns = {horizon: _mock_return(period, asset, horizon) for horizon in ["1m", "3m", "6m", "12m"]}
-            returns = list(horizon_returns.values())
             rows.append(
                 {
                     "period": period,
                     "asset_class": asset,
-                    "returns": horizon_returns,
-                    "volatility": round(abs(mean(returns)) * 1.8 + 0.04, 4),
-                    "maximum_drawdown": round(min(returns) - 0.03, 4),
-                    "risk_adjusted_return": round(mean(returns) / (abs(mean(returns)) * 1.8 + 0.04), 4),
+                    "returns": {horizon: None for horizon in ["1m", "3m", "6m", "9m", "12m"]},
+                    "volatility": None,
+                    "maximum_drawdown": None,
+                    "risk_adjusted_return": None,
+                    "status": "Insufficient verified data to quantify this item.",
                 }
             )
-    summary = []
-    for asset in ASSET_CLASSES:
-        asset_rows = [row for row in rows if row["asset_class"] == asset]
-        twelve = [row["returns"]["12m"] for row in asset_rows]
-        summary.append(
-            {
-                "asset_class": asset,
-                "hit_rate_across_analogs": sum(1 for value in twelve if value > 0) / len(twelve) if twelve else 0,
-                "dispersion_across_analogs": round(max(twelve) - min(twelve), 4) if twelve else 0,
-                "average_12m_return": round(mean(twelve), 4) if twelve else 0,
-            }
-        )
+    summary = [{
+        "asset_class": asset,
+        "hit_rate_across_analogs": None,
+        "dispersion_across_analogs": None,
+        "average_12m_return": None,
+        "status": "Insufficient verified data to quantify this item.",
+    } for asset in ASSET_CLASSES]
     return {"rows": rows, "summary": summary}
 
 
@@ -316,23 +309,20 @@ def scenario_comparison_matrix(phase_ids: list[str] | None = None) -> dict:
 
 def evaluate_scenario_recommendation(recommendation_row: dict[str, Any], horizon_months: int) -> dict:
     rec = recommendation_row["recommendation"]
-    expected_mid = mean(rec["expected_return_range"])
-    realized = _mock_realized_return(rec["asset_or_trade"], horizon_months)
-    direction_correct = (realized >= 0 and rec["direction"] in {"long", "overweight"}) or (realized <= 0 and rec["direction"] in {"short", "underweight", "avoid"})
-    low, high = rec["expected_return_range"]
     payload = {
         "recommendation_id": recommendation_row["recommendation_id"],
         "horizon_months": horizon_months,
-        "realized_return": realized,
-        "benchmark_relative_return": round(realized - 0.01 * horizon_months, 4),
-        "drawdown": round(min(realized, 0) - 0.04, 4),
-        "direction_correct": direction_correct,
-        "expected_range_accurate": low <= realized <= high,
-        "probability_calibrated": abs((1 if direction_correct else 0) - rec["probability_of_success"]) <= 0.35,
-        "hedge_worked": rec.get("category") == "hedge" and realized > 0,
-        "assumptions_correct": ["Scenario direction was directionally useful"] if direction_correct else [],
-        "assumptions_failed": [] if direction_correct else ["Recommendation direction failed against realized proxy behavior"],
-        "expected_midpoint": expected_mid,
+        "status": "Insufficient verified data to quantify this item.",
+        "realized_return": None,
+        "benchmark_relative_return": None,
+        "drawdown": None,
+        "direction_correct": None,
+        "expected_range_accurate": None,
+        "probability_calibrated": None,
+        "hedge_worked": None,
+        "assumptions_correct": [],
+        "assumptions_failed": [],
+        "expected_midpoint": None,
     }
     save_scenario_evaluation(recommendation_row["recommendation_id"], horizon_months, payload)
     return payload
@@ -344,14 +334,15 @@ def generate_phase_postmortem(phase_id: str) -> dict:
     for rec in recs:
         for horizon in [1, 3, 6, 9, 12]:
             evaluations.append(evaluate_scenario_recommendation(rec, horizon))
-    misses = [item for item in evaluations if not item["direction_correct"]]
+    measured = [item for item in evaluations if item["direction_correct"] is not None]
+    misses = [item for item in measured if not item["direction_correct"]]
     payload = {
         "phase_id": phase_id,
-        "what_model_got_right": ["Mapped scenario phase to cross-asset recommendations"] if len(misses) < len(evaluations) else [],
+        "what_model_got_right": ["Mapped scenario phase to cross-asset recommendations"] if measured and len(misses) < len(measured) else [],
         "what_model_got_wrong": ["Some recommendation directions failed"] if misses else [],
         "incorrect_analogs": ["Review lowest-scoring analogs and any analogs with high dispersion"],
         "missing_variables": ["Full vintage macro data", "Live valuation inputs", "Credit spread history"],
-        "overconfident_conclusions": [item["recommendation_id"] for item in evaluations if not item["probability_calibrated"]],
+        "overconfident_conclusions": [item["recommendation_id"] for item in measured if item["probability_calibrated"] is False],
         "successful_indicators": ["Inflation direction", "central bank curve position"],
         "failed_indicators": ["Scenario timing"] if misses else [],
         "successful_asset_mappings": [item["recommendation_id"] for item in evaluations if item["direction_correct"]][:10],
@@ -571,24 +562,6 @@ def _asset_behavior(asset: str, scenario: dict[str, Any]) -> str:
     if inflation in {"rising", "elevated"} and asset in {"gold", "oil", "industrial commodities", "inflation-linked bonds"}:
         return "likely supported"
     return "mixed / monitor"
-
-
-def _mock_return(period: str, asset: str, horizon: str) -> float:
-    seed = int(hashlib.sha256(f"{period}:{asset}:{horizon}".encode()).hexdigest()[:8], 16)
-    base = (seed % 2400) / 10000 - 0.08
-    if "1980" in period and asset in {"government bonds", "US dollar", "cash"}:
-        base += 0.05
-    if "1973" in period and asset in {"gold", "oil", "industrial commodities"}:
-        base += 0.08
-    if "2021" in period and asset in {"oil", "industrial commodities", "value stocks"}:
-        base += 0.05
-    multiplier = {"1m": 0.25, "3m": 0.5, "6m": 0.75, "12m": 1.0}[horizon]
-    return round(base * multiplier, 4)
-
-
-def _mock_realized_return(asset: str, horizon_months: int) -> float:
-    seed = int(hashlib.sha256(f"{asset}:{horizon_months}:realized".encode()).hexdigest()[:8], 16)
-    return round(((seed % 2200) / 10000 - 0.07) * (horizon_months / 12), 4)
 
 
 def _stable_id(prefix: str, value: str) -> str:
