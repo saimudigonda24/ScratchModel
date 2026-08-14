@@ -12,6 +12,26 @@ from app.connectors import ingest_all_sources
 from app.models.scenario_parser import ParsedScenario
 from app.services.database import list_investment_committee_reports, save_investment_committee_report
 from app.services.ollama_provider import OllamaProvider
+from app.services.asset_positioning import (
+    build_cross_asset_outlook,
+    build_suggested_portfolio,
+    freeze_suggested_portfolio,
+    historical_forward_performance,
+    normalized_analog_weights,
+    unexpected_opportunities,
+)
+from app.services.scenario_contract import (
+    COMMODITY_SHOCK_OPTIONS,
+    EXPECTED_FED_RESPONSE_OPTIONS,
+    GROWTH_OPTIONS,
+    INFLATION_OPTIONS,
+    MARGIN_DEBT_OPTIONS,
+    MARKET_SENTIMENT_OPTIONS,
+    REGION_OPTIONS,
+    SURPRISE_OPTIONS,
+    TIME_HORIZON_OPTIONS,
+    normalize_scenario_contract,
+)
 from app.services.scenario_lab import (
     MacroScenario,
     create_or_update_scenario_sequence,
@@ -78,19 +98,14 @@ PROXY_MAP = {
     "Underweight REITs": ("VNQ", "SPY"),
 }
 
-GROWTH_OPTIONS = ["strong acceleration", "moderate growth", "slowing growth", "stagnation", "recession"]
-INFLATION_OPTIONS = ["sharply higher", "moderately higher", "stable", "disinflation", "deflation"]
-INFLATION_SURPRISE_OPTIONS = ["large downside surprise", "small downside surprise", "in line", "small upside surprise", "large upside surprise"]
+INFLATION_SURPRISE_OPTIONS = SURPRISE_OPTIONS
 VOLATILITY_OPTIONS = ["very low", "low", "normal", "high", "crisis"]
 CENTRAL_BANK_OPTIONS = ["aggressively easing", "gradually easing", "neutral", "gradually tightening", "aggressively tightening"]
 FED_POSITION_OPTIONS = ["ahead of the curve", "roughly on time", "behind the curve"]
 LABOR_OPTIONS = ["overheating", "strong", "cooling", "weak", "recessionary"]
 FINANCIAL_CONDITIONS_OPTIONS = ["very loose", "loose", "neutral", "tight", "severely tight"]
 DOLLAR_OPTIONS = ["sharply weaker", "moderately weaker", "stable", "moderately stronger", "sharply stronger"]
-COMMODITY_SHOCK_OPTIONS = ["none", "energy shock", "food shock", "metals shock", "broad commodity shock"]
 EQUITY_VALUATION_OPTIONS = ["very cheap", "cheap", "fair", "expensive", "very expensive"]
-TIME_HORIZON_OPTIONS = ["1-3 months", "3-6 months", "6-12 months", "7-14 months", "12-24 months"]
-REGION_OPTIONS = ["U.S.", "Eurozone", "U.K.", "Japan", "China", "India", "emerging markets"]
 
 
 SCENARIO_PRESETS = {
@@ -301,19 +316,23 @@ SCENARIO_PRESETS = {
 def scenario_input_options() -> dict[str, Any]:
     return {
         "growth_outlook": GROWTH_OPTIONS,
+        "growth_surprise": SURPRISE_OPTIONS,
         "inflation_direction": INFLATION_OPTIONS,
         "inflation_surprise": INFLATION_SURPRISE_OPTIONS,
         "market_volatility": VOLATILITY_OPTIONS,
         "central_bank_stance": CENTRAL_BANK_OPTIONS,
         "fed_position": FED_POSITION_OPTIONS,
+        "expected_fed_response": EXPECTED_FED_RESPONSE_OPTIONS,
         "labor_market": LABOR_OPTIONS,
         "financial_conditions": FINANCIAL_CONDITIONS_OPTIONS,
         "dollar_outlook": DOLLAR_OPTIONS,
         "commodity_shock": COMMODITY_SHOCK_OPTIONS,
         "equity_valuation": EQUITY_VALUATION_OPTIONS,
+        "market_sentiment": MARKET_SENTIMENT_OPTIONS,
+        "margin_debt": MARGIN_DEBT_OPTIONS,
         "time_horizon": TIME_HORIZON_OPTIONS,
         "countries_or_regions": REGION_OPTIONS,
-        "presets": {name: dict(payload) for name, payload in SCENARIO_PRESETS.items()},
+        "presets": {name: normalize_scenario_contract(payload) for name, payload in SCENARIO_PRESETS.items()},
     }
 
 
@@ -386,19 +405,23 @@ def rule_based_parse_free_text_scenario(text: str) -> dict[str, Any]:
         "scenario_name": "Inflation Surprise / Fed Behind the Curve" if _behind_curve(lower) and _inflation_up(lower) else _title_from_text(text),
         "scenario_description": text.strip(),
         "growth_outlook": "moderate growth",
-        "inflation_direction": "stable",
+        "growth_surprise": "in line",
+        "inflation_direction": "stable inflation",
         "inflation_surprise": "in line",
         "recession_probability": 0.3,
         "market_volatility": "normal",
         "central_bank_stance": "neutral",
         "fed_position": "roughly on time",
+        "expected_fed_response": "hold",
         "labor_market": "cooling",
         "financial_conditions": "neutral",
         "credit_stress": 3,
         "dollar_outlook": "stable",
         "commodity_shock": "none",
         "equity_valuation": "fair",
-        "time_horizon": "7-14 months",
+        "market_sentiment": "neutral",
+        "margin_debt": "moderate",
+        "time_horizon": "9-12 months",
         "probability": None,
         "countries_or_regions": ["U.S."],
         "risks": [],
@@ -407,10 +430,12 @@ def rule_based_parse_free_text_scenario(text: str) -> dict[str, Any]:
     confidence: dict[str, float] = {
         "scenario_name": 0.7,
         "growth_outlook": 0.45,
+        "growth_surprise": 0.35,
         "inflation_direction": 0.45,
         "inflation_surprise": 0.4,
         "central_bank_stance": 0.45,
         "fed_position": 0.45,
+        "expected_fed_response": 0.4,
         "labor_market": 0.4,
         "financial_conditions": 0.35,
         "market_volatility": 0.4,
@@ -418,6 +443,8 @@ def rule_based_parse_free_text_scenario(text: str) -> dict[str, Any]:
         "dollar_outlook": 0.35,
         "commodity_shock": 0.35,
         "equity_valuation": 0.2,
+        "market_sentiment": 0.2,
+        "margin_debt": 0.2,
         "time_horizon": 0.4,
         "recession_probability": 0.4,
         "probability": 0.0,
@@ -427,17 +454,26 @@ def rule_based_parse_free_text_scenario(text: str) -> dict[str, Any]:
         scenario["growth_outlook"] = "slowing growth"
         confidence["growth_outlook"] = 0.9
     elif any(term in lower for term in ["growth remains strong", "strong growth"]):
-        scenario["growth_outlook"] = "moderate growth" if any(term in lower for term in ["slower pace", "slows", "slowing"]) else "strong acceleration"
+        scenario["growth_outlook"] = "moderate growth" if any(term in lower for term in ["slower pace", "slows", "slowing"]) else "accelerating growth"
         confidence["growth_outlook"] = 0.75
     elif any(term in lower for term in ["growth accelerates", "accelerating growth"]):
-        scenario["growth_outlook"] = "strong acceleration"
+        scenario["growth_outlook"] = "accelerating growth"
         confidence["growth_outlook"] = 0.85
     elif any(term in lower for term in ["recession", "hard landing", "contraction", "downturn"]) and not any(term in lower for term in ["probability", "risk", "if the fed", "eventually", "mild recession"]):
         scenario["growth_outlook"] = "recession"
         confidence["growth_outlook"] = 0.75
+    if any(term in lower for term in ["growth surprises positively", "growth surprises to the upside", "growth upside surprise", "growth beats expectations"]):
+        scenario["growth_surprise"] = "large upside surprise"
+        confidence["growth_surprise"] = 0.9
+    elif any(term in lower for term in ["growth upside", "growth better than expected"]):
+        scenario["growth_surprise"] = "small upside surprise"
+        confidence["growth_surprise"] = 0.8
+    elif any(term in lower for term in ["growth surprises negatively", "growth downside surprise", "growth misses expectations"]):
+        scenario["growth_surprise"] = "large downside surprise"
+        confidence["growth_surprise"] = 0.9
 
     if _inflation_up(lower):
-        scenario["inflation_direction"] = "moderately higher"
+        scenario["inflation_direction"] = "accelerating inflation"
         confidence["inflation_direction"] = 0.9
         scenario["inflation_surprise"] = "small upside surprise"
         confidence["inflation_surprise"] = 0.8
@@ -448,7 +484,7 @@ def rule_based_parse_free_text_scenario(text: str) -> dict[str, Any]:
         scenario["inflation_surprise"] = "small upside surprise"
         confidence["inflation_surprise"] = 0.85
     if any(term in lower for term in ["disinflation", "inflation cools", "inflation falls", "inflation declines"]) and not _inflation_up(lower):
-        scenario["inflation_direction"] = "disinflation"
+        scenario["inflation_direction"] = "decelerating inflation"
         scenario["inflation_surprise"] = "small downside surprise"
         confidence["inflation_direction"] = 0.85
         confidence["inflation_surprise"] = 0.75
@@ -456,17 +492,42 @@ def rule_based_parse_free_text_scenario(text: str) -> dict[str, Any]:
     if _behind_curve(lower):
         scenario["fed_position"] = "behind the curve"
         scenario["central_bank_stance"] = "gradually tightening"
+        scenario["expected_fed_response"] = "tighten"
         scenario["expected_policy_path"] = "The Fed treats inflation as temporary and delays tightening, raising the risk of a later catch-up."
         confidence["fed_position"] = 0.95
         confidence["central_bank_stance"] = 0.85
     elif any(term in lower for term in ["fed overtightening", "overtightening", "aggressive tightening", "tightens aggressively"]):
         scenario["central_bank_stance"] = "aggressively tightening"
+        scenario["expected_fed_response"] = "aggressively tighten"
         scenario["fed_position"] = "ahead of the curve"
         confidence["central_bank_stance"] = 0.85
         confidence["fed_position"] = 0.75
     elif any(term in lower for term in ["fed cuts", "easing", "pivot"]):
         scenario["central_bank_stance"] = "gradually easing"
+        scenario["expected_fed_response"] = "loosen"
         confidence["central_bank_stance"] = 0.75
+
+    if "extremely bullish" in lower:
+        scenario["market_sentiment"] = "extremely bullish"
+        confidence["market_sentiment"] = 0.9
+    elif "bullish sentiment" in lower:
+        scenario["market_sentiment"] = "bullish"
+        confidence["market_sentiment"] = 0.8
+    elif "extremely bearish" in lower:
+        scenario["market_sentiment"] = "extremely bearish"
+        confidence["market_sentiment"] = 0.9
+    elif "bearish sentiment" in lower:
+        scenario["market_sentiment"] = "bearish"
+        confidence["market_sentiment"] = 0.8
+    if "margin debt is extremely high" in lower:
+        scenario["margin_debt"] = "extremely high"
+        confidence["margin_debt"] = 0.9
+    elif "margin debt is high" in lower or "high margin debt" in lower:
+        scenario["margin_debt"] = "high"
+        confidence["margin_debt"] = 0.85
+    elif "margin debt is low" in lower:
+        scenario["margin_debt"] = "low"
+        confidence["margin_debt"] = 0.85
 
     if any(term in lower for term in ["unemployment remains low", "low unemployment", "labor remains strong", "wage growth remains strong"]):
         scenario["labor_market"] = "strong"
@@ -518,10 +579,10 @@ def rule_based_parse_free_text_scenario(text: str) -> dict[str, Any]:
         confidence["commodity_shock"] = 0.8
 
     if any(term in lower for term in ["12 months", "next 12 months", "over the next 12"]):
-        scenario["time_horizon"] = "6-12 months"
+        scenario["time_horizon"] = "9-12 months"
         confidence["time_horizon"] = 0.95
     elif any(term in lower for term in ["7-14 months", "7 to 14 months"]):
-        scenario["time_horizon"] = "7-14 months"
+        scenario["time_horizon"] = "9-12 months"
         confidence["time_horizon"] = 0.95
 
     recession_pct = _extract_percentage_near(lower, ["recession", "falls into recession", "recession if"])
@@ -566,13 +627,19 @@ def scenario_summary(scenario: dict[str, Any]) -> dict[str, Any]:
         "parse duration": _format_duration_ms(scenario.get("parse_duration_ms")),
         "widget values refreshed": "yes" if scenario.get("widgets_refreshed") else "not yet",
         "growth": normalized["growth_outlook"],
+        "growth surprise": normalized["growth_surprise"],
         "inflation": normalized["inflation_direction"],
+        "inflation surprise": normalized["inflation_surprise_label"],
         "Fed stance": normalized["central_bank_stance"],
+        "expected Fed response": normalized["expected_fed_response"],
+        "Fed position": normalized["fed_position"],
         "recession probability": f"{normalized['recession_probability']:.0%}",
         "volatility": normalized["market_volatility"],
         "credit stress": normalized["credit_stress"],
         "dollar": normalized["dollar_outlook"],
         "commodity shock": normalized["commodity_shock"],
+        "market sentiment": normalized["market_sentiment"],
+        "margin debt": normalized["margin_debt"],
         "time horizon": normalized["scenario_duration"],
         "scenario probability": "not specified" if normalized.get("probability") is None else f"{normalized['probability']:.0%}",
         "countries": ", ".join(normalized.get("countries_or_regions", [])),
@@ -687,6 +754,16 @@ def build_presentation_outlook(
     if not hedges:
         hedges = [_fallback_hedge(scenario)]
 
+    analog_rows = normalized_analog_weights(analogs.get("ranked_historical_analogs", []))
+    current_support = [
+        signal.get("interpretation", signal.get("name", ""))
+        for signal in data_snapshot.get("signals", [])[:6]
+    ]
+    expected_asset_performance = build_cross_asset_outlook(scenario, analog_rows, current_support)
+    suggested_portfolio = build_suggested_portfolio(expected_asset_performance)
+    frozen_portfolio = freeze_suggested_portfolio(phase, suggested_portfolio, analog_rows)
+    non_consensus = unexpected_opportunities(expected_asset_performance)
+    verified_historical_performance = historical_forward_performance(analog_rows)
     cross_asset = _cross_asset_outlook(scenario, top_recs)
     probabilities = _probability_detail(scenario)
     underweights = _underweights_to_avoid(scenario, top_recs)
@@ -707,9 +784,12 @@ def build_presentation_outlook(
             "name": scenario["scenario_name"],
             "description": scenario.get("scenario_description", ""),
             "growth_outlook": scenario["growth_outlook"],
+            "growth_surprise": scenario["growth_surprise"],
             "inflation_outlook": scenario["inflation_direction"],
+            "inflation_surprise": scenario.get("inflation_surprise_label"),
             "central_bank_stance": scenario["central_bank_stance"],
             "expected_policy_response": scenario["expected_policy_path"],
+            "expected_fed_response": scenario["expected_fed_response"],
             "countries_or_regions": scenario.get("countries_or_regions", ["United States"]),
             "time_horizon": scenario["scenario_duration"],
             "probability": scenario["probability"],
@@ -721,6 +801,8 @@ def build_presentation_outlook(
             "dollar_outlook": scenario["dollar_outlook"],
             "commodity_shock": scenario["commodity_shock"],
             "equity_valuation": scenario["equity_valuation"],
+            "market_sentiment": scenario["market_sentiment"],
+            "margin_debt": scenario["margin_debt"],
             "custom_assumptions": scenario.get("custom_assumptions", ""),
             "risks": scenario.get("risks", []),
             "invalidation_triggers": scenario.get("invalidation_triggers", []),
@@ -751,10 +833,25 @@ def build_presentation_outlook(
             "defensive_response": "Keep hedges explicit, shorten review intervals, and require confirmation before increasing risk.",
         },
         "cross_asset_outlook": cross_asset,
+        "expected_asset_class_performance": expected_asset_performance,
+        "suggested_portfolio": suggested_portfolio,
+        "frozen_portfolio_recommendations": [row["recommendation_id"] for row in frozen_portfolio],
+        "unexpected_opportunities": non_consensus,
+        "verified_historical_forward_performance": verified_historical_performance,
         "top_opportunities": opportunities,
         "underweights_to_avoid": underweights,
         "recommended_hedges": hedges,
-        "historical_analogs": _analog_rows(analogs, performance),
+        "historical_analogs": [
+            {
+                **row,
+                "matching_conditions": row.get("matching_features", []),
+                "major_differences": row.get("important_differences", []),
+                "why_it_matters": row.get("historical_regime_description", ""),
+                "why_it_may_fail": "; ".join(row.get("important_differences", [])),
+                "subsequent_asset_performance": "Insufficient verified data to quantify this item.",
+            }
+            for row in analog_rows
+        ],
         "central_bank_analysis": _central_bank_analysis(scenario),
         "country_regional_views": _country_regional_views(scenario),
         "risk_register": risk_register,
@@ -826,6 +923,26 @@ def outlook_to_markdown(outlook: dict[str, Any]) -> str:
         "## Historical Analogs",
         _table(outlook["historical_analogs"], ["period", "similarity_score", "matching_conditions", "major_differences", "subsequent_asset_performance", "why_it_matters", "why_it_may_fail", "supports_or_contradicts"]),
         "",
+        "## Historical Cross-Asset Performance",
+        outlook["verified_historical_forward_performance"]["methodology"],
+        "",
+        "## Expected Asset-Class Performance",
+        _table(outlook["expected_asset_class_performance"], ["asset_class", "subsegment", "outlook", "conviction", "historical_analog_support", "current_data_support", "primary_macro_driver", "major_risk", "relevant_horizon"]),
+        "",
+        "## Suggested Portfolio",
+        "### Long / Overweight",
+        _table(outlook["suggested_portfolio"]["long_overweight"], ["asset_class", "subsegment", "direction", "conviction", "expected_holding_horizon", "why_now", "main_catalyst", "main_risk", "confirmation_condition", "invalidation_condition", "portfolio_role", "tracking_benchmark_proxy"]),
+        "",
+        "### Short / Underweight",
+        _table(outlook["suggested_portfolio"]["short_underweight"], ["asset_class", "subsegment", "direction", "conviction", "expected_holding_horizon", "why_now", "main_catalyst", "main_risk", "confirmation_condition", "invalidation_condition", "portfolio_role", "tracking_benchmark_proxy"]),
+        "",
+        "## Unexpected / Non-Consensus Opportunities",
+        (
+            _table(outlook["unexpected_opportunities"], ["asset_class", "subsegment", "why_not_obvious", "why_model_surfaced_it", "historical_support", "current_support", "what_would_make_it_wrong"])
+            if outlook["unexpected_opportunities"]
+            else "No non-consensus opportunity met the evidence threshold."
+        ),
+        "",
         "## Cross-Asset Outlook",
         _table(outlook["cross_asset_outlook"], ["asset_class", "expected_direction", "conviction", "time_horizon", "expected_return_range", "rationale", "key_catalyst", "main_risk", "invalidation_condition", "historical_analog_support", "data_support", "proxy_ticker"]),
         "",
@@ -874,7 +991,7 @@ def outlook_to_markdown(outlook: dict[str, Any]) -> str:
 
 def _normalize_scenario(scenario: dict[str, Any], demo: bool = False) -> dict[str, Any]:
     defaults = DEMO_SCENARIO if demo else {}
-    merged = {**defaults, **scenario}
+    merged = normalize_scenario_contract({**defaults, **scenario})
     growth_outlook = _choice(merged, "growth_outlook", "growth_direction", default="moderate growth")
     inflation_direction = _choice(merged, "inflation_direction", default="stable")
     inflation_surprise = _choice(merged, "inflation_surprise", default="in line")
@@ -882,7 +999,7 @@ def _normalize_scenario(scenario: dict[str, Any], demo: bool = False) -> dict[st
     fed_position = _choice(merged, "fed_position", "central_bank_curve_position", default="roughly on time")
     labor_market = _choice(merged, "labor_market", "labor_market_conditions", default="cooling")
     financial_conditions = _choice(merged, "financial_conditions", default="neutral")
-    time_horizon = _choice(merged, "time_horizon", "scenario_duration", default="7-14 months")
+    time_horizon = _choice(merged, "time_horizon", "scenario_duration", default="9-12 months")
     scenario_probability = _optional_probability(merged.get("probability"))
     model = MacroScenario(
         scenario_name=merged.get("scenario_name") or "Custom Macro Scenario",
@@ -904,9 +1021,11 @@ def _normalize_scenario(scenario: dict[str, Any], demo: bool = False) -> dict[st
     )
     payload = model.__dict__
     payload["growth_outlook"] = growth_outlook
+    payload["growth_surprise"] = merged["growth_surprise"]
     payload["inflation_direction"] = inflation_direction
     payload["inflation_surprise_label"] = inflation_surprise
     payload["central_bank_stance"] = central_bank_stance
+    payload["expected_fed_response"] = merged["expected_fed_response"]
     payload["fed_position"] = fed_position
     payload["labor_market"] = labor_market
     payload["financial_conditions"] = financial_conditions
@@ -916,6 +1035,8 @@ def _normalize_scenario(scenario: dict[str, Any], demo: bool = False) -> dict[st
     payload["dollar_outlook"] = _choice(merged, "dollar_outlook", default="stable")
     payload["commodity_shock"] = _choice(merged, "commodity_shock", default="none")
     payload["equity_valuation"] = _choice(merged, "equity_valuation", default="fair")
+    payload["market_sentiment"] = merged["market_sentiment"]
+    payload["margin_debt"] = merged["margin_debt"]
     payload["custom_assumptions"] = merged.get("custom_assumptions", "")
     payload["scenario_description"] = merged.get("scenario_description", "")
     payload["scenario_id"] = merged.get("scenario_id")
@@ -1770,7 +1891,7 @@ def _validated_parsed_scenario(payload: dict[str, Any], source_text: str, provid
 
 
 def _clean_llm_payload(payload: dict[str, Any], source_text: str) -> dict[str, Any]:
-    cleaned = {key: value for key, value in payload.items()}
+    cleaned = normalize_scenario_contract({key: value for key, value in payload.items()})
     if "countries_or_regions" in cleaned and "countries" not in cleaned:
         cleaned["countries"] = cleaned["countries_or_regions"]
     if "supporting_text_by_field" in cleaned and "field_excerpts" not in cleaned:
@@ -1920,7 +2041,7 @@ def _contradiction_warnings(text: str, scenario: dict[str, Any]) -> list[str]:
 
 def _internal_growth(value: str) -> str:
     mapping = {
-        "strong acceleration": "strong",
+        "accelerating growth": "strong",
         "moderate growth": "strong",
         "slowing growth": "slowing",
         "stagnation": "slowing",
@@ -1935,10 +2056,9 @@ def _internal_growth(value: str) -> str:
 
 def _internal_inflation(value: str) -> str:
     mapping = {
-        "sharply higher": "rising",
-        "moderately higher": "rising",
-        "stable": "stable",
-        "disinflation": "falling",
+        "accelerating inflation": "rising",
+        "stable inflation": "stable",
+        "decelerating inflation": "falling",
         "deflation": "falling",
         "rising": "rising",
         "elevated": "elevated",

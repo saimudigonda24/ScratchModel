@@ -182,7 +182,7 @@ def test_scenario_api_failure_is_graceful(monkeypatch):
 def test_free_text_scenario_parsing_extracts_assumptions():
     parsed = parse_free_text_scenario("Inflation surprises higher, growth remains strong, and the Fed delays tightening.", force_rule_fallback=True)
 
-    assert parsed["growth_outlook"] == "strong acceleration"
+    assert parsed["growth_outlook"] == "accelerating growth"
     assert parsed["inflation_surprise"] == "large upside surprise"
     assert parsed["fed_position"] == "behind the curve"
     assert parsed["central_bank_stance"] == "gradually tightening"
@@ -193,7 +193,7 @@ def test_manager_scenario_parses_as_inflation_surprise_behind_curve():
 
     assert parsed["scenario_name"] == "Inflation Surprise / Fed Behind the Curve"
     assert parsed["growth_outlook"] in {"moderate growth", "slowing growth"}
-    assert parsed["inflation_direction"] == "moderately higher"
+    assert parsed["inflation_direction"] == "accelerating inflation"
     assert parsed["inflation_surprise"] == "small upside surprise"
     assert parsed["central_bank_stance"] == "gradually tightening"
     assert parsed["fed_position"] == "behind the curve"
@@ -204,7 +204,7 @@ def test_manager_scenario_parses_as_inflation_surprise_behind_curve():
     assert parsed["dollar_outlook"] == "moderately stronger"
     assert parsed["commodity_shock"] == "energy shock"
     assert parsed["equity_valuation"] == "fair"
-    assert parsed["time_horizon"] == "6-12 months"
+    assert parsed["time_horizon"] == "9-12 months"
     assert parsed["recession_probability"] == 0.30
     assert parsed["probability"] is None
     assert parsed["field_confidence"]["recession_probability"] == 1.0
@@ -243,7 +243,7 @@ def test_contained_credit_spreads_are_not_severe_stress():
 def test_energy_driven_inflation_sets_energy_shock():
     parsed = parse_free_text_scenario("Inflation begins to rise again because energy prices increase.", force_rule_fallback=True)
 
-    assert parsed["inflation_direction"] == "moderately higher"
+    assert parsed["inflation_direction"] == "accelerating inflation"
     assert parsed["commodity_shock"] == "energy shock"
 
 
@@ -320,7 +320,7 @@ def test_regression_scenario_a_core_fields():
     parsed = parse_free_text_scenario(SCENARIO_A, force_rule_fallback=True)
 
     assert parsed["growth_outlook"] == "slowing growth"
-    assert parsed["inflation_direction"] == "moderately higher"
+    assert parsed["inflation_direction"] == "accelerating inflation"
     assert parsed["inflation_surprise"] == "small upside surprise"
     assert parsed["labor_market"] == "strong"
     assert parsed["fed_position"] == "behind the curve"
@@ -334,7 +334,7 @@ def test_regression_scenario_b_core_fields_and_probabilities():
     parsed = parse_free_text_scenario(SCENARIO_B, force_rule_fallback=True)
 
     assert parsed["growth_outlook"] == "slowing growth"
-    assert parsed["inflation_direction"] == "disinflation"
+    assert parsed["inflation_direction"] == "decelerating inflation"
     assert parsed["labor_market"] in {"cooling", "weak"}
     assert parsed["financial_conditions"] == "tight"
     assert parsed["central_bank_stance"] == "gradually easing"
@@ -430,7 +430,7 @@ def test_soft_landing_gradual_easing_ollama_regression(monkeypatch):
     assert parsed["parser_model"] == "llama3.1:8b"
     assert parsed["scenario_name"] == "Soft Landing / Gradual Fed Easing"
     assert parsed["growth_outlook"] == "slowing growth"
-    assert parsed["inflation_direction"] == "disinflation"
+    assert parsed["inflation_direction"] == "decelerating inflation"
     assert parsed["central_bank_stance"] == "gradually easing"
     assert parsed["fed_position"] == "roughly on time"
     assert parsed["labor_market"] == "cooling"
@@ -439,7 +439,7 @@ def test_soft_landing_gradual_easing_ollama_regression(monkeypatch):
     assert parsed["credit_stress"] == 2
     assert parsed["dollar_outlook"] == "moderately weaker"
     assert parsed["commodity_shock"] == "none"
-    assert parsed["time_horizon"] == "6-12 months"
+    assert parsed["time_horizon"] == "6-9 months"
     assert parsed["stated_probabilities"] == {"soft_landing": 0.55, "renewed_inflation": 0.25, "mild_recession": 0.2}
     assert parsed["supporting_text_by_field"]["inflation_direction"] == "Inflation continues to decline gradually"
 
@@ -467,7 +467,7 @@ def test_slowing_disinflation_parse_is_fast_single_request_and_no_stale_leakage(
     assert parsed["parse_duration_ms"] == 420
     assert parsed["parse_timing"]["ollama_inference_ms"] == 390
     assert parsed["growth_outlook"] == "slowing growth"
-    assert parsed["inflation_direction"] == "disinflation"
+    assert parsed["inflation_direction"] == "decelerating inflation"
     assert parsed["central_bank_stance"] == "gradually easing"
     assert parsed["labor_market"] == "cooling"
     assert parsed["dollar_outlook"] == "moderately weaker"
@@ -489,11 +489,41 @@ def test_confirmation_hash_rejects_stale_state():
 
 
 def test_presets_expose_expected_defaults():
-    presets = scenario_input_options()["presets"]
+    options = scenario_input_options()
+    presets = options["presets"]
 
+    assert options["growth_outlook"]
+    assert options["inflation_direction"]
+    assert options["central_bank_stance"]
+    assert options["fed_position"]
+    assert options["countries_or_regions"]
     assert presets["Fed Overtightening / Recession"]["recession_probability"] >= 0.7
     assert presets["Credit Stress Event"]["credit_stress"] == 9
     assert presets["Dollar Squeeze"]["dollar_outlook"] == "sharply stronger"
+
+
+def test_scenario_options_endpoint_handler_returns_populated_lists():
+    from app.main import scenario_lab_options
+
+    options = scenario_lab_options()
+
+    for field in (
+        "growth_outlook",
+        "inflation_direction",
+        "inflation_surprise",
+        "central_bank_stance",
+        "fed_position",
+        "labor_market",
+        "financial_conditions",
+        "market_volatility",
+        "dollar_outlook",
+        "commodity_shock",
+        "equity_valuation",
+        "time_horizon",
+        "countries_or_regions",
+    ):
+        assert isinstance(options[field], list)
+        assert options[field], f"scenario options endpoint returned no choices for {field}"
 
 
 def test_scenario_summary_formatting():

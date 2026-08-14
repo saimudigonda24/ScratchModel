@@ -5,8 +5,9 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-GrowthOutlook = Literal["strong acceleration", "moderate growth", "slowing growth", "stagnation", "recession"]
-InflationDirection = Literal["sharply higher", "moderately higher", "stable", "disinflation", "deflation"]
+GrowthOutlook = Literal["accelerating growth", "moderate growth", "slowing growth", "stagnation", "recession"]
+GrowthSurprise = Literal["large downside surprise", "small downside surprise", "in line", "small upside surprise", "large upside surprise"]
+InflationDirection = Literal["accelerating inflation", "stable inflation", "decelerating inflation", "deflation"]
 InflationSurprise = Literal["large downside surprise", "small downside surprise", "in line", "small upside surprise", "large upside surprise"]
 MarketVolatility = Literal["very low", "low", "normal", "high", "crisis"]
 CentralBankStance = Literal["aggressively easing", "gradually easing", "neutral", "gradually tightening", "aggressively tightening"]
@@ -16,12 +17,16 @@ FinancialConditions = Literal["very loose", "loose", "neutral", "tight", "severe
 DollarOutlook = Literal["sharply weaker", "moderately weaker", "stable", "moderately stronger", "sharply stronger"]
 CommodityShock = Literal["none", "energy shock", "food shock", "metals shock", "broad commodity shock"]
 EquityValuation = Literal["very cheap", "cheap", "fair", "expensive", "very expensive"]
-TimeHorizon = Literal["1-3 months", "3-6 months", "6-12 months", "7-14 months", "12-24 months"]
+ExpectedFedResponse = Literal["aggressively tighten", "tighten", "hold", "loosen", "aggressively loosen"]
+MarketSentiment = Literal["extremely bullish", "bullish", "neutral", "bearish", "extremely bearish"]
+MarginDebt = Literal["extremely high", "high", "moderate", "low", "very low"]
+TimeHorizon = Literal["1-3 months", "3-6 months", "6-9 months", "9-12 months", "12+ months"]
 
 
 class ScenarioPhase(BaseModel):
     name: str
     growth_outlook: GrowthOutlook | None = None
+    growth_surprise: GrowthSurprise | None = None
     inflation_direction: InflationDirection | None = None
     central_bank_stance: CentralBankStance | None = None
     market_volatility: MarketVolatility | None = None
@@ -37,10 +42,12 @@ class ParsedScenario(BaseModel):
     scenario_name: str
     scenario_description: str
     growth_outlook: GrowthOutlook | None = None
+    growth_surprise: GrowthSurprise | None = None
     inflation_direction: InflationDirection | None = None
     inflation_surprise: InflationSurprise | None = None
     central_bank_stance: CentralBankStance | None = None
     expected_policy_path: str | None = None
+    expected_fed_response: ExpectedFedResponse | None = None
     fed_position: FedPosition | None = None
     labor_market: LaborMarket | None = None
     financial_conditions: FinancialConditions | None = None
@@ -49,6 +56,8 @@ class ParsedScenario(BaseModel):
     dollar_outlook: DollarOutlook | None = None
     commodity_shock: CommodityShock | None = None
     equity_valuation: EquityValuation | None = None
+    market_sentiment: MarketSentiment | None = None
+    margin_debt: MarginDebt | None = None
     time_horizon: TimeHorizon | None = None
     countries: list[str] = Field(default_factory=list)
     custom_regions: list[str] = Field(default_factory=list)
@@ -93,10 +102,12 @@ class ParsedScenario(BaseModel):
             "scenario_name": self.scenario_name,
             "scenario_description": self.scenario_description,
             "growth_outlook": self.growth_outlook,
+            "growth_surprise": self.growth_surprise,
             "inflation_direction": self.inflation_direction,
             "inflation_surprise": self.inflation_surprise,
             "central_bank_stance": self.central_bank_stance,
             "expected_policy_path": self.expected_policy_path or "data dependent",
+            "expected_fed_response": self.expected_fed_response,
             "fed_position": self.fed_position,
             "labor_market": self.labor_market,
             "financial_conditions": self.financial_conditions,
@@ -105,6 +116,8 @@ class ParsedScenario(BaseModel):
             "dollar_outlook": self.dollar_outlook,
             "commodity_shock": self.commodity_shock,
             "equity_valuation": self.equity_valuation,
+            "market_sentiment": self.market_sentiment,
+            "margin_debt": self.margin_debt,
             "time_horizon": self.time_horizon,
             "recession_probability": self.stated_probabilities.get("recession", self.stated_probabilities.get("mild_recession", 0.3)),
             "probability": None,

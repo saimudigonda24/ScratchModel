@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 
 from app.connectors import ingest_all_sources
 from app.models import FinalResearchOutput, MacroDataSnapshot, WorkflowRequest
@@ -26,6 +27,8 @@ from app.services.historical_outcome_linker import link_historical_outcome, list
 from app.services.institutional_importer import approve_and_index_document, import_historical_document
 from app.services.institutional_readiness import institutional_readiness_report
 from app.services.investment_committee_report import list_committee_reports
+from app.services.ic_pdf import generate_ic_pdf
+from app.services.theme_evolution import create_demo_four_phase_theme, save_theme
 from app.services.price_ingestion import PriceIngestionService
 from app.services.calibration_report import generate_calibration_report, latest_calibration_report
 from app.services.fine_tuning_readiness import fine_tuning_readiness_report
@@ -343,7 +346,16 @@ def scenario_lab() -> dict:
 
 @app.post("/scenario-lab/demo")
 def scenario_lab_demo() -> dict:
-    return create_demo_three_phase_sequence()
+    return create_demo_four_phase_theme()
+
+
+@app.post("/scenario-lab/themes")
+def create_twelve_month_theme(payload: dict) -> dict:
+    return save_theme(
+        payload["name"], payload["phases"],
+        description=payload.get("description", ""),
+        sequence_id=payload.get("sequence_id"),
+    )
 
 
 @app.get("/scenario-lab/options")
@@ -401,6 +413,19 @@ def scenario_lab_demo_outlook() -> dict:
         sequence_description="Presentation demo based on HCP's Phase 1 inflation surprise cycle.",
         phase_number=1,
         demo=True,
+    )
+
+
+@app.get("/investment-committee/reports/{run_id}/pdf")
+def investment_committee_pdf(run_id: str) -> Response:
+    report = next((row for row in list_committee_reports(500) if row["run_id"] == run_id), None)
+    if not report:
+        raise HTTPException(status_code=404, detail="Investment Committee report not found")
+    pdf = generate_ic_pdf(report["report"])
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{run_id}_ic_report.pdf"'},
     )
 
 

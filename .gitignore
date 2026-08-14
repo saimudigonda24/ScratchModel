@@ -4,6 +4,10 @@ __pycache__/
 .pytest_cache/
 .streamlit/
 .env
+.env.*
+!.env.example
+* 2.py
+data/cache/
 .DS_Store
 data/hcp_research.sqlite3
 data/snapshots/
@@ -15,6 +19,7 @@ reports/evaluations/
 reports/investment_committee/
 reports/outputs/
 reports/raw/hcp_research_*.txt
+output/pdf/
 datasets/cleaned_examples/hcp_research_*.jsonl
 datasets/cleaned_examples/hcp_macro_training.jsonl
 datasets/jsonl/*.jsonl

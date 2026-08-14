@@ -42,6 +42,12 @@ def test_system_monitor_smoke_layout_sections_present():
     assert "Parsed scenario loaded into controls." in source
     assert "Widget Values Refreshed" in source
     assert "Parse Duration" in source
+    assert "Scenario Lab State Debug" in source
+    assert "Current Scenario Object" in source
+    assert "Parsed Response" in source
+    assert "Scenario Options" in source
+    assert "latest_current_scenario_after_assignment" in source
+    assert 'api_post("/scenario-lab/summary", {"scenario": st.session_state.current_scenario}' in source
     assert "Credit stress" in source and "/ 10" in source
     assert "recession_pct / 100" in source
     assert "probability_pct / 100" in source

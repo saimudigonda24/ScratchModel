@@ -201,6 +201,11 @@ def identify_historical_analogs(phase: dict[str, Any], limit: int = 5) -> dict:
     result = {
         "phase_id": phase["phase_id"],
         "ranked_historical_analogs": sorted(ranked, key=lambda row: row["similarity_score"], reverse=True)[:limit],
+        "similarity_methodology": (
+            "Deterministic weighted categorical matching plus recession-probability distance. "
+            "Missing historical variables receive no match credit and are disclosed; downstream "
+            "weights are normalized similarity weights, not forecast probabilities."
+        ),
     }
     save_scenario_analogs(phase["phase_id"], result)
     return result
@@ -257,7 +262,7 @@ def generate_scenario_recommendations(phase: dict[str, Any], analog_result: dict
             "current_data_support": _current_data_support(phase),
             "model_reasoning": f"Generated from scenario assumptions, analogs, HCP memory, and lessons. Retrieved memory buckets: {list(memory.keys())}.",
             "lessons_applied": [lesson.get("pattern") for lesson in lessons[:3]],
-            "evaluation_horizons": [1, 3, 6, 12],
+            "evaluation_horizons": [1, 3, 6, 9, 12],
         }
         recommendation_id = _stable_id("scenario_rec", f"{phase['phase_id']}:{index}:{template['asset_or_trade']}")
         saved = save_scenario_recommendation(
@@ -337,7 +342,7 @@ def generate_phase_postmortem(phase_id: str) -> dict:
     recs = list_scenario_recommendations(phase_id)
     evaluations = []
     for rec in recs:
-        for horizon in [1, 3, 6, 12]:
+        for horizon in [1, 3, 6, 9, 12]:
             evaluations.append(evaluate_scenario_recommendation(rec, horizon))
     misses = [item for item in evaluations if not item["direction_correct"]]
     payload = {
@@ -443,30 +448,64 @@ def create_demo_three_phase_sequence() -> dict:
 
 def _similarity(scenario: dict[str, Any], analog: dict[str, Any]) -> tuple[float, list[str], list[str]]:
     features = analog["features"]
-    keys = ["growth_direction", "inflation_direction", "inflation_surprise", "central_bank_policy_stance", "labor_market_conditions", "financial_conditions"]
+    keys = {
+        "growth_direction": 1.5, "growth_surprise": 1.2,
+        "inflation_direction": 1.5, "inflation_surprise": 1.2,
+        "central_bank_policy_stance": 1.0, "expected_fed_response": 1.2,
+        "labor_market_conditions": 0.8, "financial_conditions": 1.0,
+        "yield_curve": 0.8, "real_yields": 0.8, "credit_spreads": 0.9,
+        "market_volatility": 0.7, "equity_valuation": 0.6,
+        "market_sentiment": 0.6, "margin_debt": 0.5,
+        "dollar_outlook": 0.6, "commodity_shock": 0.7,
+        "global_growth": 0.6, "regional_divergence": 0.5,
+    }
     matches = []
     differences = []
     score = 0.0
-    for key in keys:
+    available_weight = 0.0
+    total_weight = sum(keys.values()) + 1.0
+    for key, weight in keys.items():
+        if key not in features:
+            differences.append(f"{key}: historical data unavailable")
+            continue
+        available_weight += weight
         if str(scenario.get(key, "")).lower() == str(features.get(key, "")).lower():
-            score += 1
+            score += weight
             matches.append(key)
         else:
             differences.append(f"{key}: current={scenario.get(key)} historical={features.get(key)}")
     if str(scenario.get("central_bank_curve_position", "")).lower() == str(features.get("curve_position", "")).lower():
         score += 1
         matches.append("central_bank_curve_position")
+    else:
+        differences.append(
+            f"central_bank_curve_position: current={scenario.get('central_bank_curve_position')} "
+            f"historical={features.get('curve_position')}"
+        )
     rec_diff = abs(float(scenario.get("recession_probability", 0)) - float(features.get("recession_probability", 0)))
     score += max(0, 1 - rec_diff)
     if rec_diff > 0.25:
         differences.append(f"recession_probability differs by {rec_diff:.0%}")
-    return score / 8, matches, differences
+    coverage = available_weight / sum(keys.values())
+    if coverage < 0.75:
+        differences.append(f"historical feature coverage is {coverage:.0%}; confidence reduced")
+    return score / total_weight, matches, differences
 
 
 def _recommendation_templates(scenario: dict[str, Any]) -> list[dict[str, Any]]:
-    stance = scenario["central_bank_policy_stance"]
-    growth = scenario["growth_direction"]
-    inflation = scenario["inflation_direction"]
+    stance = scenario.get("central_bank_policy_stance") or {
+        "aggressively tighten": "aggressive_tightening",
+        "tighten": "tightening", "hold": "restrictive",
+        "loosen": "easing", "aggressively loosen": "easing",
+    }.get(scenario.get("expected_fed_response"), "restrictive")
+    growth = scenario.get("growth_direction") or {
+        "accelerating growth": "strong", "moderate growth": "strong",
+        "slowing growth": "slowing", "stagnation": "slowing", "recession": "contracting",
+    }.get(scenario.get("growth_outlook"), "mixed")
+    inflation = {
+        "accelerating inflation": "rising", "stable inflation": "stable",
+        "decelerating inflation": "falling", "deflation": "falling",
+    }.get(scenario.get("inflation_direction"), scenario.get("inflation_direction", "mixed"))
     if stance in {"delayed_tightening"} and growth == "strong":
         return [
             _rec("Energy and commodity producers", "overweight", "commodity", "asymmetric", 0.58, 7.8, [0.03, 0.18], "Higher inflation and delayed tightening support nominal assets.", "Long-duration growth equities"),
@@ -520,9 +559,16 @@ def _asset_behavior(asset: str, scenario: dict[str, Any]) -> str:
     for rec in recs:
         if asset.lower().split()[0] in rec["asset_or_trade"].lower() or rec["asset_class"] in asset.lower():
             return f"{rec['direction']} / {rec['category']}"
-    if scenario["growth_direction"] in {"contracting", "slowing"} and asset in {"government bonds", "cash", "volatility"}:
+    growth = scenario.get("growth_direction") or {
+        "slowing growth": "slowing", "stagnation": "slowing", "recession": "contracting",
+    }.get(scenario.get("growth_outlook"), "mixed")
+    inflation = {
+        "accelerating inflation": "rising", "stable inflation": "stable",
+        "decelerating inflation": "falling", "deflation": "falling",
+    }.get(scenario.get("inflation_direction"), scenario.get("inflation_direction", "mixed"))
+    if growth in {"contracting", "slowing"} and asset in {"government bonds", "cash", "volatility"}:
         return "likely defensive"
-    if scenario["inflation_direction"] in {"rising", "elevated"} and asset in {"gold", "oil", "industrial commodities", "inflation-linked bonds"}:
+    if inflation in {"rising", "elevated"} and asset in {"gold", "oil", "industrial commodities", "inflation-linked bonds"}:
         return "likely supported"
     return "mixed / monitor"
 

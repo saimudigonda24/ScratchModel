@@ -10,6 +10,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
+from scenario_state import apply_successful_parse, normalize_scenario_options
 from time_utils import format_dashboard_timestamp, format_relative_freshness
 
 
@@ -38,6 +39,16 @@ def api_post(path: str, payload: dict | None = None, default: Any = None, timeou
         return default
 
 
+def api_get_bytes(path: str) -> bytes | None:
+    try:
+        response = requests.get(f"{API_URL}{path}", timeout=90)
+        response.raise_for_status()
+        return response.content
+    except requests.RequestException as exc:
+        st.session_state.api_warnings.append(f"GET {path}: {exc}")
+        return None
+
+
 def run_local_command(args: list[str]) -> dict[str, Any]:
     completed = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, timeout=180)
     return {"returncode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
@@ -62,7 +73,12 @@ def refresh_artifacts() -> None:
     st.session_state.historical_postmortems = api_get("/institutional/postmortems", [])
     st.session_state.ic_reports = api_get("/investment-committee/reports", [])
     st.session_state.scenario_lab = api_get("/scenario-lab", {})
-    st.session_state.scenario_options = api_get("/scenario-lab/options", {"presets": {}})
+    previous_options = st.session_state.get("scenario_options", {})
+    raw_scenario_options = api_get("/scenario-lab/options", None)
+    scenario_options, scenario_options_debug = normalize_scenario_options(raw_scenario_options, previous_options)
+    st.session_state.scenario_options_api_response = raw_scenario_options
+    st.session_state.scenario_options = scenario_options
+    st.session_state.scenario_options_debug = scenario_options_debug
     st.session_state.scenario_parser_health = api_get("/scenario-lab/parser-health", {})
     st.session_state.regimes = api_get("/regimes", [])
     st.session_state.backtests = api_get("/backtests/historical", [])
@@ -185,23 +201,24 @@ def render_outlook(outlook: dict[str, Any]) -> None:
         st.write("Likely losers: " + ", ".join(outlook["bear_tail_case"]["likely_losers"]))
         st.write(outlook["bear_tail_case"]["defensive_response"])
 
-    st.subheader("Cross-Asset Outlook")
+    st.subheader("Expected Asset-Class Performance")
     table(
-        outlook["cross_asset_outlook"],
-        ["asset_class", "expected_direction", "conviction", "time_horizon", "rationale", "main_risk"],
+        outlook.get("expected_asset_class_performance", []),
+        ["asset_class", "subsegment", "outlook", "conviction", "primary_macro_driver", "major_risk", "relevant_horizon"],
     )
 
-    st.subheader("Top Opportunities")
+    st.subheader("Suggested Portfolio")
+    st.markdown("**Long / Overweight**")
     table(
-        outlook["top_opportunities"],
-        ["label", "name", "asset_class", "direction", "conviction_score", "expected_horizon", "proxy_ticker", "benchmark", "thesis", "catalyst", "invalidation_condition"],
+        outlook.get("suggested_portfolio", {}).get("long_overweight", []),
+        ["asset_class", "subsegment", "direction", "conviction", "expected_holding_horizon", "why_now", "main_risk", "tracking_benchmark_proxy"],
     )
-
-    st.subheader("Recommended Hedges")
+    st.markdown("**Short / Underweight**")
     table(
-        outlook["recommended_hedges"],
-        ["label", "hedge_name", "risk_protected_against", "implementation_concept", "expected_cost_or_drag", "expected_payoff_condition", "major_limitation"],
+        outlook.get("suggested_portfolio", {}).get("short_underweight", []),
+        ["asset_class", "subsegment", "direction", "conviction", "expected_holding_horizon", "why_now", "main_risk", "tracking_benchmark_proxy"],
     )
+    st.caption("Tracking proxies measure paper outcomes only. Recommendations are asset-class/subsegment views, not security trades.")
 
     st.subheader("What Would Change the View")
     left, right = st.columns(2)
@@ -229,19 +246,23 @@ def default_scenario() -> dict[str, Any]:
         "scenario_name": "Neutral Scenario",
         "scenario_description": "",
         "growth_outlook": "moderate growth",
-        "inflation_direction": "stable",
+        "growth_surprise": "in line",
+        "inflation_direction": "stable inflation",
         "inflation_surprise": "in line",
         "recession_probability": 0.3,
         "market_volatility": "normal",
         "central_bank_stance": "neutral",
         "fed_position": "roughly on time",
+        "expected_fed_response": "hold",
         "labor_market": "cooling",
         "financial_conditions": "neutral",
         "credit_stress": 3,
         "dollar_outlook": "stable",
         "commodity_shock": "none",
         "equity_valuation": "fair",
-        "time_horizon": "7-14 months",
+        "market_sentiment": "neutral",
+        "margin_debt": "moderate",
+        "time_horizon": "3-6 months",
         "probability": None,
         "countries_or_regions": ["U.S."],
         "custom_assumptions": "",
@@ -301,7 +322,15 @@ def _duration_label(value: Any) -> str:
 
 
 def merge_builder_updates(builder: dict[str, Any]) -> dict[str, Any]:
-    options = st.session_state.get("scenario_options") or {}
+    prior_debug = st.session_state.get("scenario_options_debug", {})
+    options, options_debug = normalize_scenario_options(st.session_state.get("scenario_options"))
+    st.session_state.scenario_options = options
+    st.session_state.scenario_options_debug = {
+        **options_debug,
+        "api_response": st.session_state.get("scenario_options_api_response"),
+        "api_missing_fields": prior_debug.get("api_missing_fields", options_debug["api_missing_fields"]),
+        "fallback_fields": prior_debug.get("fallback_fields", options_debug["fallback_fields"]),
+    }
     key_suffix = st.session_state.get("scenario_widget_version", 0)
     region_options = options.get("countries_or_regions", [])
     existing_regions = builder.get("countries_or_regions", ["U.S."])
@@ -341,20 +370,26 @@ def merge_builder_updates(builder: dict[str, Any]) -> dict[str, Any]:
         scenario_description = c2.text_area("Scenario description", value=builder.get("scenario_description", ""), height=90, key=f"scenario_description_{key_suffix}")
         c1, c2, c3 = st.columns(3)
         growth = c1.selectbox("Growth", options.get("growth_outlook", []), index=option_index(options.get("growth_outlook", []), builder.get("growth_outlook")), key=f"growth_{key_suffix}")
-        inflation = c2.selectbox("Inflation", options.get("inflation_direction", []), index=option_index(options.get("inflation_direction", []), builder.get("inflation_direction")), key=f"inflation_{key_suffix}")
-        inflation_surprise = c3.selectbox("Inflation surprise", options.get("inflation_surprise", []), index=option_index(options.get("inflation_surprise", []), builder.get("inflation_surprise")), key=f"inflation_surprise_{key_suffix}")
+        growth_surprise = c2.selectbox("Growth surprise", options.get("growth_surprise", []), index=option_index(options.get("growth_surprise", []), builder.get("growth_surprise")), key=f"growth_surprise_{key_suffix}")
+        inflation = c3.selectbox("Inflation", options.get("inflation_direction", []), index=option_index(options.get("inflation_direction", []), builder.get("inflation_direction")), key=f"inflation_{key_suffix}")
         c1, c2, c3 = st.columns(3)
-        fed_stance = c1.selectbox("Fed / central bank stance", options.get("central_bank_stance", []), index=option_index(options.get("central_bank_stance", []), builder.get("central_bank_stance")), key=f"fed_stance_{key_suffix}")
-        fed_position = c2.selectbox("Fed position", options.get("fed_position", []), index=option_index(options.get("fed_position", []), builder.get("fed_position")), key=f"fed_position_{key_suffix}")
-        labor = c3.selectbox("Labor market", options.get("labor_market", []), index=option_index(options.get("labor_market", []), builder.get("labor_market")), key=f"labor_{key_suffix}")
+        inflation_surprise = c1.selectbox("Inflation surprise", options.get("inflation_surprise", []), index=option_index(options.get("inflation_surprise", []), builder.get("inflation_surprise")), key=f"inflation_surprise_{key_suffix}")
+        fed_stance = c2.selectbox("Current Fed stance", options.get("central_bank_stance", []), index=option_index(options.get("central_bank_stance", []), builder.get("central_bank_stance")), key=f"fed_stance_{key_suffix}")
+        fed_position = c3.selectbox("Fed position", options.get("fed_position", []), index=option_index(options.get("fed_position", []), builder.get("fed_position")), key=f"fed_position_{key_suffix}")
         c1, c2, c3 = st.columns(3)
-        financial = c1.selectbox("Financial conditions", options.get("financial_conditions", []), index=option_index(options.get("financial_conditions", []), builder.get("financial_conditions")), key=f"financial_{key_suffix}")
-        volatility = c2.selectbox("Market volatility", options.get("market_volatility", []), index=option_index(options.get("market_volatility", []), builder.get("market_volatility")), key=f"volatility_{key_suffix}")
-        dollar = c3.selectbox("Dollar outlook", options.get("dollar_outlook", []), index=option_index(options.get("dollar_outlook", []), builder.get("dollar_outlook")), key=f"dollar_{key_suffix}")
+        expected_fed_response = c1.selectbox("Expected Fed response", options.get("expected_fed_response", []), index=option_index(options.get("expected_fed_response", []), builder.get("expected_fed_response")), key=f"expected_fed_response_{key_suffix}")
+        labor = c2.selectbox("Labor market", options.get("labor_market", []), index=option_index(options.get("labor_market", []), builder.get("labor_market")), key=f"labor_{key_suffix}")
+        financial = c3.selectbox("Financial conditions", options.get("financial_conditions", []), index=option_index(options.get("financial_conditions", []), builder.get("financial_conditions")), key=f"financial_{key_suffix}")
         c1, c2, c3 = st.columns(3)
-        commodity = c1.selectbox("Commodity shock", options.get("commodity_shock", []), index=option_index(options.get("commodity_shock", []), builder.get("commodity_shock")), key=f"commodity_{key_suffix}")
-        valuation = c2.selectbox("Equity valuation", options.get("equity_valuation", []), index=option_index(options.get("equity_valuation", []), builder.get("equity_valuation")), key=f"valuation_{key_suffix}")
-        horizon = c3.selectbox("Time horizon", options.get("time_horizon", []), index=option_index(options.get("time_horizon", []), builder.get("time_horizon")), key=f"horizon_{key_suffix}")
+        volatility = c1.selectbox("Market volatility", options.get("market_volatility", []), index=option_index(options.get("market_volatility", []), builder.get("market_volatility")), key=f"volatility_{key_suffix}")
+        dollar = c2.selectbox("Dollar outlook", options.get("dollar_outlook", []), index=option_index(options.get("dollar_outlook", []), builder.get("dollar_outlook")), key=f"dollar_{key_suffix}")
+        commodity = c3.selectbox("Commodity shock", options.get("commodity_shock", []), index=option_index(options.get("commodity_shock", []), builder.get("commodity_shock")), key=f"commodity_{key_suffix}")
+        c1, c2, c3 = st.columns(3)
+        valuation = c1.selectbox("Equity valuation", options.get("equity_valuation", []), index=option_index(options.get("equity_valuation", []), builder.get("equity_valuation")), key=f"valuation_{key_suffix}")
+        market_sentiment = c2.selectbox("Market sentiment", options.get("market_sentiment", []), index=option_index(options.get("market_sentiment", []), builder.get("market_sentiment")), key=f"market_sentiment_{key_suffix}")
+        margin_debt = c3.selectbox("Margin debt", options.get("margin_debt", []), index=option_index(options.get("margin_debt", []), builder.get("margin_debt")), key=f"margin_debt_{key_suffix}")
+        c1, c2 = st.columns(2)
+        horizon = c1.selectbox("Time horizon", options.get("time_horizon", []), index=option_index(options.get("time_horizon", []), builder.get("time_horizon")), key=f"horizon_{key_suffix}")
         st.markdown("**Section B - Risk and Probability**")
         c1, c2, c3 = st.columns(3)
         credit_stress = c1.slider("Credit stress", 0, 10, int(builder.get("credit_stress", 3)), key=f"credit_stress_{key_suffix}")
@@ -380,10 +415,12 @@ def merge_builder_updates(builder: dict[str, Any]) -> dict[str, Any]:
         "scenario_name": scenario_name,
         "scenario_description": scenario_description,
         "growth_outlook": growth,
+        "growth_surprise": growth_surprise,
         "inflation_direction": inflation,
         "inflation_surprise": inflation_surprise,
         "central_bank_stance": fed_stance,
         "fed_position": fed_position,
+        "expected_fed_response": expected_fed_response,
         "labor_market": labor,
         "financial_conditions": financial,
         "market_volatility": volatility,
@@ -391,6 +428,8 @@ def merge_builder_updates(builder: dict[str, Any]) -> dict[str, Any]:
         "dollar_outlook": dollar,
         "commodity_shock": commodity,
         "equity_valuation": valuation,
+        "market_sentiment": market_sentiment,
+        "margin_debt": margin_debt,
         "time_horizon": horizon,
         "recession_probability": recession_pct / 100,
         "probability": probability_pct / 100 if probability_specified else None,
@@ -460,10 +499,11 @@ with st.sidebar:
 tabs = st.tabs(
     [
         "Scenario Lab",
-        "Current Outlook",
-        "Investment Committee Report",
         "Historical Analogs",
-        "Opportunities & Hedges",
+        "Expected Asset-Class Performance",
+        "Suggested Portfolio",
+        "Portfolio Evolution",
+        "Investment Committee Report",
         "Outcomes & Evaluation",
         "Historical HCP Reports",
         "System Monitor",
@@ -478,7 +518,15 @@ with tabs[0]:
     st.session_state.setdefault("current_scenario", default_scenario())
     st.session_state.setdefault("scenario_builder", st.session_state.current_scenario)
     st.session_state.scenario_builder = st.session_state.current_scenario
-    options = st.session_state.get("scenario_options") or {"presets": {}}
+    prior_debug = st.session_state.get("scenario_options_debug", {})
+    options, options_debug = normalize_scenario_options(st.session_state.get("scenario_options"))
+    st.session_state.scenario_options = options
+    st.session_state.scenario_options_debug = {
+        **options_debug,
+        "api_response": st.session_state.get("scenario_options_api_response"),
+        "api_missing_fields": prior_debug.get("api_missing_fields", options_debug["api_missing_fields"]),
+        "fallback_fields": prior_debug.get("fallback_fields", options_debug["fallback_fields"]),
+    }
 
     input_tabs = st.tabs(["Describe a Scenario", "Build a Scenario"])
     with input_tabs[0]:
@@ -504,24 +552,28 @@ with tabs[0]:
                 timeout=15,
             )
             ui_update_started = time.perf_counter()
-            if parsed.get("scenario"):
-                scenario = parsed["scenario"]
+            st.session_state.latest_parsed_response = parsed
+            if isinstance(parsed, dict) and parsed.get("status") == "ok" and isinstance(parsed.get("scenario"), dict):
+                scenario = dict(parsed["scenario"])
                 timing = dict(scenario.get("parse_timing") or {})
                 timing["ui_update_ms"] = int((time.perf_counter() - ui_update_started) * 1000)
                 timing["streamlit_roundtrip_ms"] = int((time.perf_counter() - started) * 1000)
                 scenario["parse_timing"] = timing
                 scenario["widgets_refreshed"] = True
-                st.session_state.scenario_parse_timing = timing
-                set_current_scenario(scenario, status="Parsed scenario loaded into controls.", widgets_refreshed=True)
+                parsed = {**parsed, "scenario": scenario}
+                applied, apply_error = apply_successful_parse(st.session_state, parsed)
+                if not applied:
+                    st.session_state.scenario_parse_status = f"Parse response could not be applied: {apply_error}"
+                    st.error(st.session_state.scenario_parse_status)
+                    return
                 st.success("Parsed scenario loaded into controls.")
-            elif parsed.get("status") == "not_ready":
-                reset_scenario_state(clear_text=False)
-                st.session_state.scenario_parse_status = "Parse failed; neutral controls loaded."
+            elif isinstance(parsed, dict) and parsed.get("status") == "not_ready":
+                st.session_state.scenario_parse_status = "Parser unavailable; current scenario preserved."
                 st.warning(f"Ollama parser unavailable: {parsed.get('warning')}")
                 st.info("Choose Use Rule-Based Fallback, Enter Manually, or Retry Ollama.")
             else:
-                reset_scenario_state(clear_text=False)
-                st.error("Parser response could not be applied; neutral controls loaded.")
+                st.session_state.scenario_parse_status = "Invalid parser response; current scenario preserved."
+                st.error("Parser response could not be applied; the current scenario was preserved.")
 
         if st.button("Parse Scenario", use_container_width=True):
             with st.status("Parsing scenario", expanded=True) as status:
@@ -577,7 +629,7 @@ with tabs[0]:
     editor = merge_builder_updates(st.session_state.scenario_builder)
     st.session_state.current_scenario = editor["scenario"]
     st.session_state.scenario_builder = st.session_state.current_scenario
-    summary = api_post("/scenario-lab/summary", {"scenario": st.session_state.scenario_builder}, {"summary": {}})
+    summary = api_post("/scenario-lab/summary", {"scenario": st.session_state.current_scenario}, {"summary": {}})
     st.markdown("**Pre-Analysis Summary**")
     if st.session_state.scenario_builder.get("scenario_id"):
         st.caption(f"Scenario ID: {st.session_state.scenario_builder.get('scenario_id')} | Hash: {st.session_state.scenario_builder.get('scenario_hash')}")
@@ -646,14 +698,14 @@ with tabs[0]:
 
     render_outlook(st.session_state.get("scenario_outlook", {}))
 
-with tabs[1]:
-    st.header("Current Outlook")
+with tabs[2]:
+    st.header("Expected Asset-Class Performance")
     render_outlook(st.session_state.get("scenario_outlook", {}))
     st.subheader("Latest Data Signals")
     signals = (st.session_state.get("signals") or {}).get("signals", [])
     table(signals, ["source", "name", "value", "direction", "interpretation"], "No data signals loaded yet.")
 
-with tabs[2]:
+with tabs[5]:
     st.header("Investment Committee Report")
     reports = st.session_state.get("ic_reports", [])
     if not reports:
@@ -672,8 +724,17 @@ with tabs[2]:
         meta_cols[1].metric("Data Mode", report_json.get("data_mode", "Unknown"))
         meta_cols[2].metric("Approval", "Pending" if report_json.get("approval_status", {}).get("pending_content") else "Approved")
         meta_cols[3].metric("Horizon", scenario_def.get("time_horizon", "n/a"))
-        st.download_button("Export Markdown", report_body, file_name=f"{report.get('run_id')}_ic_report.md", mime="text/markdown")
-        st.info("PDF-ready view: use your browser print command and choose Save as PDF.")
+        export_cols = st.columns(2)
+        export_cols[0].download_button("Export Markdown", report_body, file_name=f"{report.get('run_id')}_ic_report.md", mime="text/markdown")
+        pdf_bytes = api_get_bytes(f"/investment-committee/reports/{report.get('run_id')}/pdf")
+        if pdf_bytes:
+            export_cols[1].download_button(
+                "Export PDF", pdf_bytes,
+                file_name=f"{report.get('run_id')}_ic_report.pdf",
+                mime="application/pdf",
+            )
+        else:
+            export_cols[1].caption("PDF service unavailable; use browser print-to-PDF.")
         status = report_json.get("approval_status", {})
         if status:
             cols = st.columns(2)
@@ -692,7 +753,7 @@ with tabs[2]:
         with st.expander("Print-Friendly Notes"):
             st.markdown("Use the Markdown export for committee packets, or use browser print and Save as PDF for a PDF-ready view.")
 
-with tabs[3]:
+with tabs[1]:
     st.header("Historical Analogs")
     outlook = st.session_state.get("scenario_outlook", {})
     analogs = outlook.get("historical_analogs", [])
@@ -708,21 +769,24 @@ with tabs[3]:
         table(analog.get("subsequent_asset_performance", []), None, "No performance summary stored for this analog.")
         st.caption("Historical analogs are reference cases, not forecasts.")
 
-with tabs[4]:
-    st.header("Opportunities & Hedges")
+with tabs[3]:
+    st.header("Suggested Portfolio")
     outlook = st.session_state.get("scenario_outlook", {})
-    st.subheader("Ranked Opportunities")
+    st.subheader("Long / Overweight")
     table(
-        outlook.get("top_opportunities", []),
-        ["label", "name", "asset_class", "direction", "conviction_score", "expected_horizon", "proxy_ticker", "benchmark", "conditions_for_entry", "conditions_for_exit", "risks", "invalidation_condition"],
-        "No opportunities generated yet.",
+        outlook.get("suggested_portfolio", {}).get("long_overweight", []),
+        ["asset_class", "subsegment", "direction", "conviction", "expected_holding_horizon", "historical_analog_support", "current_data_support", "why_now", "main_catalyst", "main_risk", "confirmation_condition", "invalidation_condition", "portfolio_role", "tracking_benchmark_proxy"],
+        "No long/overweight positions generated yet.",
     )
-    st.subheader("Recommended Hedges")
+    st.subheader("Short / Underweight")
     table(
-        outlook.get("recommended_hedges", []),
-        ["label", "hedge_name", "risk_protected_against", "implementation_concept", "expected_cost_or_drag", "expected_payoff_condition", "major_limitation"],
-        "No hedges generated yet.",
+        outlook.get("suggested_portfolio", {}).get("short_underweight", []),
+        ["asset_class", "subsegment", "direction", "conviction", "expected_holding_horizon", "historical_analog_support", "current_data_support", "why_now", "main_catalyst", "main_risk", "confirmation_condition", "invalidation_condition", "portfolio_role", "tracking_benchmark_proxy"],
+        "No short/underweight positions generated yet.",
     )
+    st.subheader("Unexpected / Non-Consensus Opportunities")
+    table(outlook.get("unexpected_opportunities", []), None, "No opportunities met the evidence threshold.")
+    st.caption("Research hypotheses for human review only. No trade execution is implied.")
     with st.expander("Human Approval Queue"):
         approvals = st.session_state.get("approvals", [])
         if approvals:
@@ -749,7 +813,23 @@ with tabs[4]:
         else:
             st.info("No approval items are currently pending.")
 
-with tabs[5]:
+with tabs[4]:
+    st.header("Portfolio Evolution")
+    st.write("Build a 12-month theme across four sequential three-month phases.")
+    if st.button("Build Demo 12-Month Theme", use_container_width=True):
+        st.session_state.portfolio_evolution = api_post("/scenario-lab/demo", {}, {})
+    evolution = st.session_state.get("portfolio_evolution", {})
+    for phase in evolution.get("phases", []):
+        with st.expander(f"{phase.get('window')} - {phase.get('phase_name')}", expanded=True):
+            st.json(phase.get("scenario", {}))
+            table(phase.get("historical_analogs", []), ["period", "similarity_score", "analog_weight", "matching_features", "important_differences"])
+            portfolio = phase.get("suggested_portfolio", {})
+            table(portfolio.get("long_overweight", []), ["subsegment", "direction", "conviction", "why_now"], "No longs.")
+            table(portfolio.get("short_underweight", []), ["subsegment", "direction", "conviction", "why_now"], "No shorts.")
+    st.subheader("Portfolio Changes Between Phases")
+    table(evolution.get("portfolio_changes", []), None, "Build a theme to view phase changes.")
+
+with tabs[6]:
     st.header("Outcomes & Evaluation")
     outcomes = st.session_state.get("outcomes", {})
     cols = st.columns(3)
@@ -782,7 +862,7 @@ with tabs[5]:
     else:
         st.info("No calibration report generated yet.")
 
-with tabs[6]:
+with tabs[7]:
     st.header("Historical HCP Reports")
     uploaded = st.file_uploader("Upload historical report", type=["txt", "md", "eml", "pdf", "docx"], key="historical_upload")
     with st.form("historical_upload_form"):
@@ -820,7 +900,7 @@ with tabs[6]:
         st.success(f"Imported document: {st.session_state.import_result.get('document_id')}")
     dashboard_table(st.session_state.get("institutional_documents", []), None, "No historical HCP reports imported yet.")
 
-with tabs[7]:
+with tabs[8]:
     st.header("System Monitor")
     scheduler = st.session_state.get("scheduler_status", {})
     cols = st.columns(4)
@@ -868,6 +948,33 @@ with tabs[7]:
     st.caption(f"Latest parse duration: {parser_health.get('latest_parse_duration_ms') or 'n/a'} ms")
     if parser_health.get("latest_parser_error"):
         st.caption(f"Latest parser error: {parser_health.get('latest_parser_error')}")
+
+    st.subheader("Scenario Lab State Debug")
+    scenario_debug = st.session_state.get("scenario_options_debug", {})
+    choice_counts = scenario_debug.get("choice_counts", {})
+    debug_rows = [{"Field": field, "Choices": count} for field, count in choice_counts.items()]
+    table(debug_rows, ["Field", "Choices"], "Scenario option counts are not available.")
+    missing_fields = scenario_debug.get("missing_fields", [])
+    api_missing_fields = scenario_debug.get("api_missing_fields", [])
+    if missing_fields:
+        st.error("Missing widget option fields: " + ", ".join(missing_fields))
+    elif api_missing_fields:
+        st.warning("The options API omitted fields; local safe options are active for: " + ", ".join(api_missing_fields))
+    else:
+        st.success("All required scenario option fields were returned by the API.")
+    debug_tabs = st.tabs(["Current Scenario Object", "Parsed Response", "Scenario Options"])
+    with debug_tabs[0]:
+        st.json(st.session_state.get("current_scenario", {}))
+        st.caption(f"Widget version: {st.session_state.get('scenario_widget_version', 0)}")
+        st.caption(f"Version after latest parse assignment: {st.session_state.get('latest_widget_version_after_assignment', 'not available')}")
+        st.json(st.session_state.get("latest_current_scenario_after_assignment", {}))
+    with debug_tabs[1]:
+        st.json(st.session_state.get("latest_parsed_response", {}))
+    with debug_tabs[2]:
+        st.caption("Raw scenario options API response")
+        st.json(st.session_state.get("scenario_options_api_response"))
+        st.caption("Scenario options used by Streamlit")
+        st.json(st.session_state.get("scenario_options", {}))
 
     st.subheader("Data Sources & Model Providers")
     audit = st.session_state.get("source_audit", {"records": [], "comparison_readiness": {}})
